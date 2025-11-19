@@ -1,0 +1,30 @@
+# Flask ML API Requirements
+# Core Flask
+Flask>=2.3.0
+flask-cors>=4.0.0
+
+# Machine Learning
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Database (for forecasting)
+pymysql>=1.0.0
+
+# Configuration (optional - for .env file support)
+python-dotenv>=1.0.0
+
+# Training Dependencies (optional but recommended)
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# HTTP Requests (for weather API)
+requests>=2.31.0
+
+# Optional but recommended (production server)
+gunicorn>=21.2.0
+
+

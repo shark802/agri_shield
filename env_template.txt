@@ -1,0 +1,25 @@
+# AgriShield Flask ML API Configuration Template
+# Copy this file to .env and update with your values
+
+# Flask Server
+FLASK_HOST=0.0.0.0
+FLASK_PORT=8000
+FLASK_DEBUG=False
+
+# Database Configuration
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=asdb
+DB_CHARSET=utf8mb4
+
+# Model Path (optional - defaults to Flask folder)
+MODEL_BASE_PATH=
+
+# Default Location
+DEFAULT_LOCATION=Bago City
+
+# Logging
+LOG_LEVEL=INFO
+
+
