@@ -1,33 +1,26 @@
-# Flask ML API Requirements
+# Flask ML API Requirements - Optimized for Heroku (CPU-only PyTorch)
 # Core Flask
-Flask>=2.3.0
-flask-cors>=4.0.0
+Flask==2.3.0
+flask-cors==4.0.0
+gunicorn==21.2.0
 
-# Machine Learning
-torch>=2.0.0
-torchvision>=0.15.0
-ultralytics>=8.0.0
-numpy>=1.24.0
-Pillow>=10.0.0
+# PyTorch CPU-only (saves ~2GB vs CUDA version)
+# Install from PyPI CPU-only wheels
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.0.1+cpu
+torchvision==0.15.2+cpu
 
-# Database (for forecasting)
-pymysql>=1.0.0
+# Ultralytics (YOLO) - latest stable
+ultralytics==8.0.196
 
-# Configuration (optional - for .env file support)
-python-dotenv>=1.0.0
+# Essential dependencies (minimal versions)
+numpy==1.24.3
+Pillow==10.0.0
+pymysql==1.1.0
+python-dotenv==1.0.0
+requests==2.31.0
 
-# Training Dependencies (optional but recommended)
-scikit-learn>=1.3.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-
-# HTTP Requests (for weather API)
-requests>=2.31.0
-
-# Optional but recommended (production server)
-gunicorn>=21.2.0
-
-# HTTP Requests (for PHP endpoint calls)
-requests>=2.31.0
-
-
+# Removed to save space (not needed for inference):
+# - scikit-learn (~50MB)
+# - matplotlib (~30MB) 
+# - seaborn (~20MB)
