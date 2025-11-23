@@ -13,12 +13,6 @@ torchvision==0.15.2+cpu
 # Ultralytics (YOLO) - latest stable
 ultralytics==8.0.196
 
-# Ultralytics dependencies (REQUIRED - was missing!)
-opencv-python-headless==4.8.1.78  # Headless version (no GUI, smaller for Heroku)
-pyyaml==6.0.1
-scipy==1.11.4
-psutil==5.9.6
-
 # Essential dependencies (minimal versions)
 numpy==1.24.3
 Pillow==10.0.0
