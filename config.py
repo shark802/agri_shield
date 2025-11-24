@@ -97,7 +97,10 @@ def get_php_base_url():
     
     # Try to detect from common production setups
     # This should be set via environment variable in production
-    return os.getenv('PHP_BASE_URL', 'http://localhost/Proto1','https://endpoint-agrishield-12fa38de0135.herokuapp.com/')
+    # Default to Heroku URL if on Heroku, otherwise localhost
+    if os.getenv('DYNO'):  # DYNO is set on Heroku
+        return 'https://endpoint-agrishield-12fa38de0135.herokuapp.com'
+    return os.getenv('PHP_BASE_URL', 'http://localhost/Proto1')
 
 PHP_BASE_URL = get_php_base_url()
 
