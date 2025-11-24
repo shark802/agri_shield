@@ -1,0 +1,33 @@
+# Django ML API Requirements - Optimized for Heroku (CPU-only PyTorch)
+# Core Django
+Django==4.2.7
+django-cors-headers==4.3.1
+gunicorn==21.2.0
+
+# PyTorch CPU-only (saves ~2GB vs CUDA version)
+# Install from PyPI CPU-only wheels
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.0.1+cpu
+torchvision==0.15.2+cpu
+
+# Ultralytics (YOLO) - latest stable
+ultralytics==8.0.196
+
+# Ultralytics dependencies (REQUIRED)
+opencv-python-headless==4.8.1.78  # Headless version (no GUI, smaller for Heroku)
+pyyaml==6.0.1
+scipy==1.11.4
+psutil==5.9.6
+
+# Essential dependencies (minimal versions)
+numpy==1.24.3
+Pillow==10.0.0
+pymysql==1.1.0
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Removed to save space (not needed for inference):
+# - scikit-learn (~50MB)
+# - matplotlib (~30MB) 
+# - seaborn (~20MB)
+
