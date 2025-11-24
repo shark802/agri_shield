@@ -87,11 +87,6 @@ def load_db_config_from_php():
 # Database configuration (from config.php)
 DB_CONFIG = load_db_config_from_php()
 
-# Log database configuration (without password for security)
-import logging
-logger = logging.getLogger(__name__)
-logger.info(f"📊 Database Config: host={DB_CONFIG.get('host')}, user={DB_CONFIG.get('user')}, database={DB_CONFIG.get('database')}")
-
 # Get PHP base URL for API calls (production-ready)
 def get_php_base_url():
     """Get PHP base URL for API calls"""
@@ -102,7 +97,7 @@ def get_php_base_url():
     
     # Try to detect from common production setups
     # This should be set via environment variable in production
-    return os.getenv('PHP_BASE_URL', 'http://localhost/Proto1')
+    return os.getenv('PHP_BASE_URL', 'http://localhost/Proto1','https://endpoint-agrishield-12fa38de0135.herokuapp.com/')
 
 PHP_BASE_URL = get_php_base_url()
 
