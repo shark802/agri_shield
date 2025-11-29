@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ONNX-based Pest Detection API
-Uses ONNX Runtime instead of TFLite (works better on Windows)
+Combined AgriShield API - Pest Detection + Training
+ONNX Runtime for inference + PyTorch for training
 """
 
 from __future__ import annotations
@@ -10,10 +10,14 @@ import io
 import os
 import time
 import numpy as np
+import json
+import subprocess
+import threading
 from typing import Dict, Any
 from pathlib import Path
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from PIL import Image
 
 # Try to import ONNX Runtime
@@ -24,12 +28,22 @@ except ImportError:
     ONNX_AVAILABLE = False
     print("⚠️  ONNX Runtime not available. Install with: pip install onnxruntime")
 
+# Database for training
+import pymysql
+
 app = Flask(__name__)
+CORS(app)
+
+# ============================================================================
+# PEST DETECTION (ONNX Runtime)
+# ============================================================================
 
 # Model configuration
 ONNX_MODEL_PATH = None
 CLASS_NAMES = []
 session = None
+input_details = None
+output_details = None
 
 def find_onnx_model() -> str:
     """Find ONNX model file"""
@@ -104,49 +118,197 @@ else:
     input_details = None
     output_details = None
 
+# ============================================================================
+# TRAINING SERVICE
+# ============================================================================
+
+# Database configuration from environment variables
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'auth-db1322.hstgr.io'),
+    'user': os.getenv('DB_USER', 'u520834156_uAShield2025'),
+    'password': os.getenv('DB_PASSWORD', ':JqjB0@0zb6v'),
+    'database': os.getenv('DB_NAME', 'u520834156_dbAgriShield'),
+    'charset': 'utf8mb4'
+}
+
+# Training script path
+TRAINING_SCRIPT = os.getenv('TRAINING_SCRIPT', 'train.py')
+
+def get_training_job(job_id):
+    """Get training job from database"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("SELECT * FROM training_jobs WHERE job_id = %s", (job_id,))
+        job = cursor.fetchone()
+        conn.close()
+        return job
+    except Exception as e:
+        print(f"Error getting job: {e}")
+        return None
+
+def update_job_status(job_id, status, message=None):
+    """Update training job status"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        
+        if status == 'completed':
+            cursor.execute("UPDATE training_jobs SET status = %s, completed_at = NOW() WHERE job_id = %s", 
+                          (status, job_id))
+        elif status == 'failed':
+            cursor.execute("UPDATE training_jobs SET status = %s, completed_at = NOW(), error_message = %s WHERE job_id = %s", 
+                          (status, message[:500] if message else None, job_id))
+        else:
+            cursor.execute("UPDATE training_jobs SET status = %s WHERE job_id = %s", 
+                          (status, job_id))
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error updating job status: {e}")
+
+def log_to_database(job_id, level, message):
+    """Log to database"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SHOW TABLES LIKE 'training_logs'")
+        if cursor.fetchone():
+            cursor.execute("INSERT INTO training_logs (training_job_id, log_level, message) VALUES (%s, %s, %s)",
+                          (job_id, level, message[:1000]))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Log error: {e}")
+
+def run_training(job_id):
+    """Run training in background thread"""
+    try:
+        job = get_training_job(job_id)
+        if not job:
+            print(f"Job {job_id} not found")
+            return
+        
+        config = json.loads(job.get('training_config', '{}'))
+        epochs = config.get('epochs', 50)
+        batch_size = config.get('batch_size', 8)
+        
+        update_job_status(job_id, 'running')
+        log_to_database(job_id, 'INFO', 'Training started on Heroku service')
+        
+        # Check if training script exists
+        script_path = os.path.join(os.path.dirname(__file__), TRAINING_SCRIPT)
+        if not os.path.exists(script_path):
+            # Try alternative paths
+            alt_paths = [
+                os.path.join(os.getcwd(), TRAINING_SCRIPT),
+                os.path.join(os.getcwd(), 'deployment', 'scripts', 'admin_training_script.py'),
+                os.path.join(os.path.dirname(__file__), 'deployment', 'scripts', 'admin_training_script.py'),
+                TRAINING_SCRIPT
+            ]
+            for path in alt_paths:
+                if os.path.exists(path):
+                    script_path = path
+                    break
+        
+        if not os.path.exists(script_path):
+            error_msg = f"Training script not found: {script_path}"
+            update_job_status(job_id, 'failed', error_msg)
+            log_to_database(job_id, 'ERROR', error_msg)
+            return
+        
+        # Run training script
+        cmd = [
+            'python', script_path,
+            '--job_id', str(job_id),
+            '--epochs', str(epochs),
+            '--batch_size', str(batch_size)
+        ]
+        
+        log_to_database(job_id, 'INFO', f'Running: {" ".join(cmd)}')
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1 hour timeout
+        
+        if result.returncode == 0:
+            update_job_status(job_id, 'completed')
+            log_to_database(job_id, 'INFO', 'Training completed successfully')
+        else:
+            error_msg = result.stderr[:500] if result.stderr else result.stdout[:500]
+            update_job_status(job_id, 'failed', error_msg)
+            log_to_database(job_id, 'ERROR', f'Training failed: {error_msg}')
+            
+    except subprocess.TimeoutExpired:
+        error_msg = "Training timeout (exceeded 1 hour)"
+        update_job_status(job_id, 'failed', error_msg)
+        log_to_database(job_id, 'ERROR', error_msg)
+    except Exception as e:
+        error_msg = str(e)[:500]
+        update_job_status(job_id, 'failed', error_msg)
+        log_to_database(job_id, 'ERROR', f'Training error: {error_msg}')
+
+# ============================================================================
+# API ROUTES
+# ============================================================================
+
 @app.get("/")
 def index() -> Any:
     """Root endpoint - API information"""
     return jsonify({
-        "name": "AgriShield Pest Detection API",
+        "name": "AgriShield Combined API",
         "version": "1.0.0",
-        "framework": "ONNX Runtime",
-        "status": "running",
+        "services": {
+            "detection": {
+                "framework": "ONNX Runtime",
+                "status": "running" if ONNX_AVAILABLE and session else "error",
+                "model_loaded": session is not None,
+                "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
+            },
+            "training": {
+                "status": "available",
+                "database": "connected" if DB_CONFIG else "not configured"
+            }
+        },
         "endpoints": {
             "health": "/health",
-            "detect": "/detect (POST)"
-        },
-        "model_loaded": session is not None,
-        "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
+            "detect": "/detect (POST)",
+            "train": "/train (POST)",
+            "training_status": "/status/<job_id> (GET)"
+        }
     })
 
 @app.get("/health")
 def health() -> Any:
     """Health check endpoint"""
-    if not ONNX_AVAILABLE:
-        return jsonify({
-            "status": "error",
-            "message": "ONNX Runtime not available",
-            "install": "pip install onnxruntime"
-        }), 500
+    detection_ok = ONNX_AVAILABLE and session is not None
     
-    if session is None:
-        return jsonify({
-            "status": "error",
-            "message": "ONNX model not loaded"
-        }), 500
+    # Test database connection
+    db_ok = False
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        conn.close()
+        db_ok = True
+    except:
+        pass
     
     return jsonify({
-        "status": "ok",
-        "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none",
-        "classes": CLASS_NAMES,
-        "num_classes": len(CLASS_NAMES),
-        "framework": "ONNX Runtime"
+        "status": "ok" if detection_ok and db_ok else "partial",
+        "detection": {
+            "status": "ok" if detection_ok else "error",
+            "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
+        },
+        "training": {
+            "status": "ok" if db_ok else "error",
+            "database": "connected" if db_ok else "disconnected"
+        }
     })
+
+# ============================================================================
+# PEST DETECTION ROUTES
+# ============================================================================
 
 def preprocess_image(image: Image.Image, input_shape: tuple) -> np.ndarray:
     """Preprocess image for ONNX model"""
-    # Get target size from input shape (usually [1, 3, H, W] or [1, H, W, 3])
     if len(input_shape) == 4:
         if input_shape[1] == 3:  # NCHW format
             h, w = input_shape[2], input_shape[3]
@@ -155,16 +317,10 @@ def preprocess_image(image: Image.Image, input_shape: tuple) -> np.ndarray:
     else:
         h, w = 512, 512  # Default
     
-    # Resize
     img = image.resize((w, h))
-    
-    # Convert to numpy array
     img_array = np.array(img, dtype=np.float32)
-    
-    # Normalize to [0, 1]
     img_array = img_array / 255.0
     
-    # Handle format (ONNX usually expects NCHW: [1, 3, H, W])
     if len(img_array.shape) == 3:  # HWC
         img_array = np.transpose(img_array, (2, 0, 1))  # HWC -> CHW
         img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
@@ -175,10 +331,8 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) ->
     """Postprocess ONNX model output to get pest counts"""
     counts = {name: 0 for name in CLASS_NAMES}
     
-    # ONNX YOLO output format: [batch, num_detections, 6]
-    # Where 6 = [x, y, w, h, confidence, class_id]
     if len(output_data.shape) == 3:
-        detections = output_data[0]  # Remove batch dimension
+        detections = output_data[0]
     elif len(output_data.shape) == 2:
         detections = output_data
     else:
@@ -251,8 +405,66 @@ def detect() -> Any:
         "framework": "ONNX Runtime"
     })
 
+# ============================================================================
+# TRAINING ROUTES
+# ============================================================================
+
+@app.route('/train', methods=['POST'])
+def start_training():
+    """Start training job"""
+    try:
+        data = request.json or {}
+        job_id = data.get('job_id')
+        
+        if not job_id:
+            return jsonify({'success': False, 'message': 'job_id required'}), 400
+        
+        # Check if job exists and is pending
+        job = get_training_job(job_id)
+        if not job:
+            return jsonify({'success': False, 'message': 'Job not found'}), 404
+        
+        if job['status'] != 'pending':
+            return jsonify({
+                'success': False, 
+                'message': f'Job status is {job["status"]}, expected pending'
+            }), 400
+        
+        # Start training in background thread
+        thread = threading.Thread(target=run_training, args=(job_id,))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Training started',
+            'job_id': job_id
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/status/<int:job_id>', methods=['GET'])
+def get_status(job_id):
+    """Get training job status"""
+    try:
+        job = get_training_job(job_id)
+        if not job:
+            return jsonify({'success': False, 'message': 'Job not found'}), 404
+        
+        return jsonify({
+            'success': True,
+            'job_id': job_id,
+            'status': job['status'],
+            'completed_at': job.get('completed_at'),
+            'error_message': job.get('error_message')
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
-    print(f"Starting ONNX-based Pest Detection API on port {port}...")
+    print(f"Starting Combined AgriShield API on port {port}...")
+    print(f"  - Pest Detection: ONNX Runtime")
+    print(f"  - Training Service: PyTorch")
     app.run(host="0.0.0.0", port=port, debug=False)
-
