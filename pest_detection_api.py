@@ -284,12 +284,14 @@ def health() -> Any:
     
     # Test database connection
     db_ok = False
+    db_error = None
     try:
         conn = pymysql.connect(**DB_CONFIG)
         conn.close()
         db_ok = True
-    except:
-        pass
+    except Exception as e:
+        db_error = str(e)
+        print(f"Database connection error: {db_error}")
     
     return jsonify({
         "status": "ok" if detection_ok and db_ok else "partial",
@@ -299,7 +301,8 @@ def health() -> Any:
         },
         "training": {
             "status": "ok" if db_ok else "error",
-            "database": "connected" if db_ok else "disconnected"
+            "database": "connected" if db_ok else "disconnected",
+            "error": db_error if db_error else None
         }
     })
 
