@@ -1,0 +1,39 @@
+{
+  "name": "AgriShield Training Service",
+  "description": "Independent training service for pest detection models",
+  "repository": "https://github.com/shark802/agri_shield",
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "env": {
+    "DB_HOST": {
+      "description": "Database host",
+      "value": "auth-db1322.hstgr.io"
+    },
+    "DB_USER": {
+      "description": "Database user",
+      "value": "u520834156_uAShield2025"
+    },
+    "DB_PASSWORD": {
+      "description": "Database password",
+      "required": true
+    },
+    "DB_NAME": {
+      "description": "Database name",
+      "value": "u520834156_dbAgriShield"
+    },
+    "TRAINING_SCRIPT": {
+      "description": "Path to training script",
+      "value": "train.py"
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  }
+}
+
