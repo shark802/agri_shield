@@ -1402,7 +1402,7 @@ def create_combined_dataset(logger):
     return combined_train_dir, combined_val_dir, pest_classes
 
 def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
-    """Train YOLO object detection model using YOLOv5 (lighter than YOLOv8)"""
+    """Train YOLO object detection model using Ultralytics YOLOv8"""
     try:
         # Set environment variables to disable GUI dependencies (for Heroku)
         import os
@@ -1410,15 +1410,13 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
         os.environ['DISPLAY'] = ''
         os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
         
-        import yolov5
+        from ultralytics import YOLO
         
-        logger.info("Starting YOLO object detection training...")
-        print("[INFO] Starting YOLO object detection training...", flush=True)
+        logger.info("Starting YOLOv8 object detection training...")
+        print("[INFO] Starting YOLOv8 object detection training...", flush=True)
         print(f"[INFO] Job ID: {job_id}", flush=True)
         print(f"[INFO] Epochs: {epochs}, Batch Size: {batch_size}", flush=True)
         print(f"[INFO] Dataset: {data_yaml_path}", flush=True)
-        
-        from ultralytics import YOLO
         
         # Initialize YOLO model (using nano for smallest size)
         model = YOLO('yolov8n.pt')  # Nano is smallest YOLOv8 variant
