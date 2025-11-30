@@ -436,7 +436,10 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) ->
     counts = {name: 0 for name in CLASS_NAMES}
     
     if len(CLASS_NAMES) == 0:
+        print("⚠️  No class names defined!")
         return counts
+    
+    print(f"🔍 Postprocessing output: shape={output_data.shape}, classes={len(CLASS_NAMES)}, threshold={conf_threshold}")
     
     # Handle different output shapes
     if len(output_data.shape) == 3:
@@ -448,20 +451,29 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) ->
     elif len(output_data.shape) == 4:
         # Shape: [1, classes, H, W] - Classification model output
         # Convert to detection format (not ideal, but for backward compatibility)
+        print(f"🔍 Classification model detected: shape {output_data.shape}")
         output_data = output_data[0]  # Remove batch dimension
         if output_data.shape[0] == len(CLASS_NAMES):
             # Classification output: [classes, H, W] -> get max class
             class_probs = np.mean(output_data, axis=(1, 2))  # Average over spatial dimensions
             max_class = int(np.argmax(class_probs))
             max_conf = float(np.max(class_probs))
+            print(f"🔍 Classification result: class={max_class} ({CLASS_NAMES[max_class] if max_class < len(CLASS_NAMES) else 'unknown'}), confidence={max_conf:.4f}, threshold={conf_threshold}")
             if max_conf >= conf_threshold and 0 <= max_class < len(CLASS_NAMES):
                 counts[CLASS_NAMES[max_class]] = 1  # Classification: only 1 detection
+                print(f"✅ Detection accepted: {CLASS_NAMES[max_class]}")
+            else:
+                print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < threshold {conf_threshold}")
+        else:
+            print(f"⚠️  Class count mismatch: model has {output_data.shape[0]} classes, expected {len(CLASS_NAMES)}")
         return counts
     else:
         return counts
     
     # Process detections (YOLO format: [x, y, w, h, conf, class_id, ...] or [x1, y1, x2, y2, conf, class_id, ...])
-    for detection in detections:
+    print(f"🔍 Processing {len(detections)} detections (YOLO format)")
+    detection_count = 0
+    for i, detection in enumerate(detections):
         if len(detection) < 6:
             continue
         
@@ -488,8 +500,17 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) ->
                 class_id = int(detection[5])
         
         if conf is not None and class_id is not None:
+            if i < 3:  # Log first 3 detections for debugging
+                print(f"🔍 Detection {i}: class_id={class_id}, conf={conf:.4f}, threshold={conf_threshold}")
             if conf >= conf_threshold and 0 <= class_id < len(CLASS_NAMES):
                 counts[CLASS_NAMES[class_id]] += 1
+                detection_count += 1
+                if detection_count <= 3:
+                    print(f"✅ Accepted: {CLASS_NAMES[class_id]} (conf={conf:.4f})")
+            elif i < 3:
+                print(f"⚠️  Rejected: class_id={class_id} (out of range) or conf={conf:.4f} < {conf_threshold}")
+    
+    print(f"🔍 Total detections accepted: {detection_count}")
     
     return counts
 
@@ -537,8 +558,30 @@ def detect() -> Any:
     
     dt = time.time() - t0
     
-    # Postprocess
+    # Debug: Log model output for troubleshooting
+    print(f"🔍 Model output shape: {output_data.shape}")
+    print(f"🔍 Model output min/max: {output_data.min():.4f} / {output_data.max():.4f}")
+    print(f"🔍 Model output mean: {output_data.mean():.4f}")
+    if len(output_data.shape) >= 2:
+        print(f"🔍 Model output sample (first 5 values): {output_data.flatten()[:5]}")
+    
+    # Postprocess - try lower threshold if no detections
     counts = postprocess_output(output_data, conf_threshold=0.15)
+    total_detections = sum(counts.values())
+    
+    # If no detections, try with lower threshold
+    if total_detections == 0:
+        print("⚠️  No detections with threshold 0.15, trying 0.05...")
+        counts = postprocess_output(output_data, conf_threshold=0.05)
+        total_detections = sum(counts.values())
+    
+    # Debug: Log detection results
+    print(f"🔍 Final detection results: {total_detections} total pests detected")
+    for pest, count in counts.items():
+        if count > 0:
+            print(f"   ✅ {pest}: {count}")
+        else:
+            print(f"   ❌ {pest}: 0")
     
     # Pesticide recommendations
     pesticide_recs = {
