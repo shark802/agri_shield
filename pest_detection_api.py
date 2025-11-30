@@ -231,16 +231,45 @@ def run_training(job_id):
         ]
         
         log_to_database(job_id, 'INFO', f'Running: {" ".join(cmd)}')
+        log_to_database(job_id, 'INFO', f'Training script found at: {script_path}')
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1 hour timeout
+        # Run training with real-time output capture
+        # Use Popen to capture output in real-time and log it
+        import subprocess as sp
+        process = sp.Popen(
+            cmd,
+            stdout=sp.PIPE,
+            stderr=sp.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
         
-        if result.returncode == 0:
+        # Read output line by line and log to database
+        output_lines = []
+        for line in process.stdout:
+            line = line.strip()
+            if line:
+                print(f"[Training] {line}")  # Also print to Heroku logs
+                output_lines.append(line)
+                # Log important lines to database
+                if any(keyword in line.lower() for keyword in ['epoch', 'batch', 'loss', 'acc', 'saved', 'error', 'completed']):
+                    log_to_database(job_id, 'INFO', line[:500])  # Limit length
+        
+        process.wait()
+        returncode = process.returncode
+        
+        if returncode == 0:
             update_job_status(job_id, 'completed')
             log_to_database(job_id, 'INFO', 'Training completed successfully')
+            # Log final summary
+            final_lines = [l for l in output_lines[-10:] if l]  # Last 10 lines
+            if final_lines:
+                log_to_database(job_id, 'INFO', f'Final output: {" | ".join(final_lines)}')
         else:
-            error_msg = result.stderr[:500] if result.stderr else result.stdout[:500]
+            error_msg = '\n'.join(output_lines[-20:])[:500]  # Last 20 lines
             update_job_status(job_id, 'failed', error_msg)
-            log_to_database(job_id, 'ERROR', f'Training failed: {error_msg}')
+            log_to_database(job_id, 'ERROR', f'Training failed (exit code {returncode}): {error_msg}')
             
     except subprocess.TimeoutExpired:
         error_msg = "Training timeout (exceeded 1 hour)"

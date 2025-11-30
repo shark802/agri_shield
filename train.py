@@ -254,21 +254,27 @@ class AdminTrainingLogger:
         self.log_to_db('ERROR', safe_message)
     
     def log_to_db(self, level, message):
-        """Log message to database (optional - won't crash if DB unavailable)"""
+        """Log message to database via PHP API (optional - won't crash if API unavailable)"""
         try:
             # Ensure message is ASCII-safe
             safe_message = str(message).encode('ascii', 'replace').decode('ascii')
-            conn = pymysql.connect(**self.db_config)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO training_logs (training_job_id, log_level, message) VALUES (%s, %s, %s)",
-                (self.job_id, level, safe_message)
-            )
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            # Silently fail - database logging is optional
-            # Don't print to avoid encoding issues and spam
+            
+            # Use PHP API instead of direct database connection
+            import requests
+            php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+            url = f"{php_api_base}/add_log.php"
+            
+            data = {
+                'job_id': self.job_id,
+                'level': level,
+                'message': safe_message[:1000]  # Limit length
+            }
+            
+            # Non-blocking: don't wait too long for API response
+            requests.post(url, json=data, timeout=2)
+        except Exception:
+            # Silently fail - API logging is optional
+            # Training continues even if logging fails
             pass
 
 class EnhancedPestDataset(Dataset):
@@ -609,34 +615,22 @@ class ModelTrainer:
             self.logger.error(f"Failed to save model: {e}")
 
 def update_job_status(job_id, status, error_message=None):
-    """Update training job status in database"""
+    """Update training job status via PHP API"""
     try:
-        conn = pymysql.connect(**DB_CONFIG)
-        cursor = conn.cursor()
+        import requests
+        php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+        url = f"{php_api_base}/update_status.php"
         
-        if status == 'completed':
-            cursor.execute(
-                "UPDATE training_jobs SET status = %s, completed_at = NOW() WHERE job_id = %s",
-                (status, job_id)
-            )
-        elif status == 'failed':
-            # Ensure error message is ASCII-safe
-            safe_error = str(error_message).encode('ascii', 'replace').decode('ascii') if error_message else None
-            cursor.execute(
-                "UPDATE training_jobs SET status = %s, completed_at = NOW(), error_message = %s WHERE job_id = %s",
-                (status, safe_error, job_id)
-            )
-        else:
-            cursor.execute(
-                "UPDATE training_jobs SET status = %s WHERE job_id = %s",
-                (status, job_id)
-            )
+        data = {
+            'job_id': job_id,
+            'status': status
+        }
+        if error_message:
+            data['message'] = str(error_message).encode('ascii', 'replace').decode('ascii')[:500]
         
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        # Silently fail - database updates are optional
-        # Don't print to avoid encoding issues
+        requests.post(url, json=data, timeout=5)
+    except Exception:
+        # Silently fail - API updates are optional
         pass
 
 def load_classes_from_yaml(yaml_path):
