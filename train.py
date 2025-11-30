@@ -982,31 +982,59 @@ def create_combined_dataset(logger):
                 return 0
             
             reorganized_count = 0
+            skipped_no_label = 0
+            skipped_invalid_label = 0
+            skipped_duplicate = 0
+            skipped_invalid_class = 0
+            
             images = list(images_dir.glob('*.jpg')) + list(images_dir.glob('*.jpeg')) + list(images_dir.glob('*.png'))
             print(f"  [INFO] Found {len(images)} images in {images_dir}", flush=True)
             
             for img_path in images:
                 label_path = labels_dir / (img_path.stem + '.txt')
-                if label_path.exists():
-                    # Read first line of label to get class index
-                    try:
-                        with open(label_path, 'r') as f:
-                            first_line = f.readline().strip()
-                            if first_line:
-                                parts = first_line.split()
-                                if len(parts) >= 5:
-                                    class_index = int(parts[0])
-                                    # Map class index to class name (assuming indices match YAML order)
-                                    if class_index < len(pest_classes):
-                                        class_name = pest_classes[class_index]
-                                        # Copy image to class folder
-                                        dest = output_dir / class_name / img_path.name
-                                        if not dest.exists():  # Avoid duplicates
-                                            shutil.copy2(img_path, dest)
-                                            reorganized_count += 1
-                    except Exception as e:
-                        logger.warning(f"Error processing {img_path}: {e}")
-                        continue
+                if not label_path.exists():
+                    skipped_no_label += 1
+                    continue
+                
+                # Read first line of label to get class index
+                try:
+                    with open(label_path, 'r') as f:
+                        first_line = f.readline().strip()
+                        if not first_line:
+                            skipped_invalid_label += 1
+                            continue
+                        
+                        parts = first_line.split()
+                        if len(parts) < 5:
+                            skipped_invalid_label += 1
+                            continue
+                        
+                        class_index = int(parts[0])
+                        # Map class index to class name (assuming indices match YAML order)
+                        if class_index >= len(pest_classes):
+                            skipped_invalid_class += 1
+                            continue
+                        
+                        class_name = pest_classes[class_index]
+                        # Copy image to class folder
+                        dest = output_dir / class_name / img_path.name
+                        if dest.exists():  # Avoid duplicates
+                            skipped_duplicate += 1
+                            continue
+                        
+                        shutil.copy2(img_path, dest)
+                        reorganized_count += 1
+                except Exception as e:
+                    skipped_invalid_label += 1
+                    logger.warning(f"Error processing {img_path}: {e}")
+                    continue
+            
+            # Print detailed statistics
+            total_processed = len(images)
+            total_skipped = skipped_no_label + skipped_invalid_label + skipped_duplicate + skipped_invalid_class
+            print(f"  [INFO] {split_name}: {reorganized_count}/{total_processed} images reorganized", flush=True)
+            if total_skipped > 0:
+                print(f"  [INFO]   Skipped: {skipped_no_label} (no label), {skipped_invalid_label} (invalid label), {skipped_duplicate} (duplicate), {skipped_invalid_class} (invalid class)", flush=True)
             
             return reorganized_count
         
