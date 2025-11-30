@@ -536,13 +536,20 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
         if conf is not None and class_id is not None:
             if i < 3:  # Log first 3 detections for debugging
                 print(f"🔍 Detection {i}: class_id={class_id}, conf={conf:.4f}, threshold={conf_threshold}")
-            if conf >= conf_threshold and 0 <= class_id < len(CLASS_NAMES):
+            
+            # For YOLO, use higher threshold to reduce false positives
+            yolo_threshold = max(conf_threshold, YOLO_CONF_THRESHOLD)
+            
+            if conf >= yolo_threshold and 0 <= class_id < len(CLASS_NAMES):
                 counts[CLASS_NAMES[class_id]] += 1
                 detection_count += 1
                 if detection_count <= 3:
-                    print(f"✅ Accepted: {CLASS_NAMES[class_id]} (conf={conf:.4f})")
+                    print(f"✅ Accepted: {CLASS_NAMES[class_id]} (conf={conf:.4f} >= {yolo_threshold})")
             elif i < 3:
-                print(f"⚠️  Rejected: class_id={class_id} (out of range) or conf={conf:.4f} < {conf_threshold}")
+                if conf < yolo_threshold:
+                    print(f"⚠️  Rejected: conf={conf:.4f} < threshold {yolo_threshold}")
+                elif class_id < 0 or class_id >= len(CLASS_NAMES):
+                    print(f"⚠️  Rejected: class_id={class_id} out of range [0, {len(CLASS_NAMES)})")
     
     print(f"🔍 Total detections accepted: {detection_count}")
     
@@ -696,3 +703,4 @@ if __name__ == "__main__":
     print(f"  - Pest Detection: ONNX Runtime")
     print(f"  - Training Service: PyTorch")
     app.run(host="0.0.0.0", port=port, debug=False)
+
