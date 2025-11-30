@@ -458,12 +458,31 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) ->
             class_probs = np.mean(output_data, axis=(1, 2))  # Average over spatial dimensions
             max_class = int(np.argmax(class_probs))
             max_conf = float(np.max(class_probs))
-            print(f"🔍 Classification result: class={max_class} ({CLASS_NAMES[max_class] if max_class < len(CLASS_NAMES) else 'unknown'}), confidence={max_conf:.4f}, threshold={conf_threshold}")
-            if max_conf >= conf_threshold and 0 <= max_class < len(CLASS_NAMES):
+            
+            # Get all class probabilities for debugging
+            all_probs = {CLASS_NAMES[i]: float(class_probs[i]) for i in range(len(CLASS_NAMES))}
+            print(f"🔍 All class probabilities: {all_probs}")
+            print(f"🔍 Max: class={max_class} ({CLASS_NAMES[max_class] if max_class < len(CLASS_NAMES) else 'unknown'}), confidence={max_conf:.4f}, threshold={conf_threshold}")
+            
+            # Higher threshold for classification to reduce false positives
+            # Also check if max confidence is significantly higher than other classes
+            min_conf_threshold = max(conf_threshold, 0.3)  # At least 30% confidence for classification
+            second_max_conf = float(np.partition(class_probs, -2)[-2]) if len(class_probs) > 1 else 0
+            confidence_gap = max_conf - second_max_conf
+            
+            print(f"🔍 Confidence check: max={max_conf:.4f}, second_max={second_max_conf:.4f}, gap={confidence_gap:.4f}, min_threshold={min_conf_threshold:.4f}")
+            
+            # Require: high confidence AND significant gap from other classes (reduces false positives)
+            if max_conf >= min_conf_threshold and confidence_gap >= 0.1 and 0 <= max_class < len(CLASS_NAMES):
                 counts[CLASS_NAMES[max_class]] = 1  # Classification: only 1 detection
-                print(f"✅ Detection accepted: {CLASS_NAMES[max_class]}")
+                print(f"✅ Detection accepted: {CLASS_NAMES[max_class]} (conf={max_conf:.4f}, gap={confidence_gap:.4f})")
             else:
-                print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < threshold {conf_threshold}")
+                if max_conf < min_conf_threshold:
+                    print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < minimum threshold {min_conf_threshold:.4f}")
+                elif confidence_gap < 0.1:
+                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < 0.1) - likely false positive")
+                else:
+                    print(f"⚠️  Detection rejected: class index out of range")
         else:
             print(f"⚠️  Class count mismatch: model has {output_data.shape[0]} classes, expected {len(CLASS_NAMES)}")
         return counts
@@ -565,15 +584,12 @@ def detect() -> Any:
     if len(output_data.shape) >= 2:
         print(f"🔍 Model output sample (first 5 values): {output_data.flatten()[:5]}")
     
-    # Postprocess - try lower threshold if no detections
+    # Postprocess with standard threshold
     counts = postprocess_output(output_data, conf_threshold=0.15)
     total_detections = sum(counts.values())
     
-    # If no detections, try with lower threshold
-    if total_detections == 0:
-        print("⚠️  No detections with threshold 0.15, trying 0.05...")
-        counts = postprocess_output(output_data, conf_threshold=0.05)
-        total_detections = sum(counts.values())
+    # Don't lower threshold automatically - this causes false positives
+    # Instead, keep the threshold high to reduce false positives
     
     # Debug: Log detection results
     print(f"🔍 Final detection results: {total_detections} total pests detected")
