@@ -1192,9 +1192,36 @@ def create_combined_dataset(logger):
             logger.info("No images found in database, trying YOLO format")
     
     # PRIORITY 1B: Reorganize from YOLO format (if database method didn't work)
-    if organized_yaml.exists() and organized_train_images.exists() and pest_classes:
+    # Check if we have the necessary directories for YOLO reorganization
+    has_yolo_structure = (
+        organized_yaml.exists() and 
+        pest_classes and 
+        (organized_train_images.exists() or organized_val_images.exists())
+    )
+    
+    if has_yolo_structure:
         print(f"[INFO] Found organized dataset from import, reorganizing from YOLO format...", flush=True)
         logger.info("Reorganizing organized dataset from YOLO format into class folders")
+        
+        # Debug: Check what directories actually exist
+        print(f"[DEBUG] Checking YOLO structure:", flush=True)
+        print(f"  data.yaml: {organized_yaml.exists()}", flush=True)
+        print(f"  train/images: {organized_train_images.exists()}", flush=True)
+        print(f"  train/labels: {organized_train_labels.exists()}", flush=True)
+        print(f"  valid/images: {organized_val_images.exists()}", flush=True)
+        print(f"  valid/labels: {organized_val_labels.exists()}", flush=True)
+        
+        if organized_train_images.exists():
+            train_img_count = len(list(organized_train_images.glob('*.jpg')) + 
+                                 list(organized_train_images.glob('*.jpeg')) + 
+                                 list(organized_train_images.glob('*.png')))
+            print(f"  train/images count: {train_img_count}", flush=True)
+        
+        if organized_val_images.exists():
+            val_img_count = len(list(organized_val_images.glob('*.jpg')) + 
+                              list(organized_val_images.glob('*.jpeg')) + 
+                              list(organized_val_images.glob('*.png')))
+            print(f"  valid/images count: {val_img_count}", flush=True)
         
         # Create classification-ready dataset structure
         classification_train_dir = organized_dir / "classification" / "train"
@@ -1296,7 +1323,14 @@ def create_combined_dataset(logger):
             sys.stdout.flush()
             return classification_train_dir, classification_val_dir, pest_classes
         else:
-            print(f"[WARN] No images found in organized dataset, falling back...", flush=True)
+            print(f"[WARN] No images found in organized dataset after reorganization", flush=True)
+            print(f"[DEBUG] Train count: {train_count}, Val count: {val_count}, Test count: {test_count}", flush=True)
+            if organized_train_images.exists():
+                all_train_imgs = list(organized_train_images.glob('*'))
+                print(f"[DEBUG] Train images dir contains {len(all_train_imgs)} items", flush=True)
+            if organized_train_labels.exists():
+                all_train_lbls = list(organized_train_labels.glob('*'))
+                print(f"[DEBUG] Train labels dir contains {len(all_train_lbls)} items", flush=True)
             logger.warning("No images found in organized dataset, falling back")
     
     # PRIORITY 2: Fallback to old dataset structure (only if organized dataset doesn't exist or has no images)
