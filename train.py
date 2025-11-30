@@ -1014,9 +1014,22 @@ def create_combined_dataset(logger):
         train_count = reorganize_from_yolo(organized_train_images, organized_train_labels, classification_train_dir, "train")
         val_count = reorganize_from_yolo(organized_val_images, organized_val_labels, classification_val_dir, "val")
         
+        # Also include test images in training set (optional - use all available data)
+        organized_test_images = organized_dir / "test" / "images"
+        organized_test_labels = organized_dir / "test" / "labels"
+        test_count = 0
+        if organized_test_images.exists() and organized_test_labels.exists():
+            # Add test images to training set (not validation, to maximize training data)
+            test_count = reorganize_from_yolo(organized_test_images, organized_test_labels, classification_train_dir, "test")
+            if test_count > 0:
+                print(f"[INFO] Added {test_count} test images to training set (using all available data)", flush=True)
+                logger.info(f"Added {test_count} test images to training set")
+        
         if train_count > 0 or val_count > 0:
-            print(f"[OK] Reorganized dataset from YOLO: {train_count} train images, {val_count} val images", flush=True)
-            logger.info(f"Reorganized dataset from YOLO: {train_count} train images, {val_count} val images")
+            total_train = train_count + test_count
+            print(f"[OK] Reorganized dataset from YOLO: {total_train} train images ({train_count} train + {test_count} test), {val_count} val images", flush=True)
+            logger.info(f"Reorganized dataset from YOLO: {total_train} train images, {val_count} val images")
+            print(f"  Total images used: {total_train + val_count} (out of {train_count + val_count + test_count} available)", flush=True)
             print(f"  Using reorganized dataset at: {classification_train_dir}", flush=True)
             sys.stdout.flush()
             return classification_train_dir, classification_val_dir, pest_classes
