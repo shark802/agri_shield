@@ -28,8 +28,8 @@ except ImportError:
     ONNX_AVAILABLE = False
     print("⚠️  ONNX Runtime not available. Install with: pip install onnxruntime")
 
-# Database for training
-import pymysql
+# Database for training - using PHP API instead of direct MySQL
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -119,66 +119,70 @@ else:
     output_details = None
 
 # ============================================================================
-# TRAINING SERVICE
+# TRAINING SERVICE - Using PHP API Gateway (No Direct Database Access)
 # ============================================================================
 
-# Database configuration from environment variables
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'auth-db1322.hstgr.io'),
-    'user': os.getenv('DB_USER', 'u520834156_uAShield2025'),
-    'password': os.getenv('DB_PASSWORD', ':JqjB0@0zb6v'),
-    'database': os.getenv('DB_NAME', 'u520834156_dbAgriShield'),
-    'charset': 'utf8mb4'
-}
+# PHP API Base URL - Heroku calls PHP endpoints instead of MySQL directly
+PHP_API_BASE = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
 
 # Training script path
 TRAINING_SCRIPT = os.getenv('TRAINING_SCRIPT', 'train.py')
 
 def get_training_job(job_id):
-    """Get training job from database"""
+    """Get training job via PHP API"""
     try:
-        conn = pymysql.connect(**DB_CONFIG)
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("SELECT * FROM training_jobs WHERE job_id = %s", (job_id,))
-        job = cursor.fetchone()
-        conn.close()
-        return job
+        url = f"{PHP_API_BASE}/get_job.php"
+        response = requests.get(url, params={'job_id': job_id}, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success') and data.get('job'):
+                return data['job']
+        elif response.status_code == 404:
+            print(f"Job {job_id} not found")
+        else:
+            print(f"Error getting job: HTTP {response.status_code} - {response.text}")
+        return None
     except Exception as e:
         print(f"Error getting job: {e}")
         return None
 
 def update_job_status(job_id, status, message=None):
-    """Update training job status"""
+    """Update training job status via PHP API"""
     try:
-        conn = pymysql.connect(**DB_CONFIG)
-        cursor = conn.cursor()
+        url = f"{PHP_API_BASE}/update_status.php"
+        data = {
+            'job_id': job_id,
+            'status': status
+        }
+        if message:
+            data['message'] = message[:500]
         
-        if status == 'completed':
-            cursor.execute("UPDATE training_jobs SET status = %s, completed_at = NOW() WHERE job_id = %s", 
-                          (status, job_id))
-        elif status == 'failed':
-            cursor.execute("UPDATE training_jobs SET status = %s, completed_at = NOW(), error_message = %s WHERE job_id = %s", 
-                          (status, message[:500] if message else None, job_id))
+        response = requests.post(url, json=data, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if not result.get('success'):
+                print(f"Failed to update status: {result.get('error')}")
         else:
-            cursor.execute("UPDATE training_jobs SET status = %s WHERE job_id = %s", 
-                          (status, job_id))
-        
-        conn.commit()
-        conn.close()
+            print(f"Error updating status: HTTP {response.status_code} - {response.text}")
     except Exception as e:
         print(f"Error updating job status: {e}")
 
 def log_to_database(job_id, level, message):
-    """Log to database"""
+    """Log to database via PHP API"""
     try:
-        conn = pymysql.connect(**DB_CONFIG)
-        cursor = conn.cursor()
-        cursor.execute("SHOW TABLES LIKE 'training_logs'")
-        if cursor.fetchone():
-            cursor.execute("INSERT INTO training_logs (training_job_id, log_level, message) VALUES (%s, %s, %s)",
-                          (job_id, level, message[:1000]))
-            conn.commit()
-        conn.close()
+        url = f"{PHP_API_BASE}/add_log.php"
+        data = {
+            'job_id': job_id,
+            'level': level,
+            'message': message[:1000]
+        }
+        
+        response = requests.post(url, json=data, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"Error logging: HTTP {response.status_code} - {response.text}")
     except Exception as e:
         print(f"Log error: {e}")
 
@@ -266,7 +270,8 @@ def index() -> Any:
             },
             "training": {
                 "status": "available",
-                "database": "connected" if DB_CONFIG else "not configured"
+                "database": "via PHP API Gateway",
+                "method": "No direct MySQL access needed"
             }
         },
         "endpoints": {
@@ -282,27 +287,33 @@ def health() -> Any:
     """Health check endpoint"""
     detection_ok = ONNX_AVAILABLE and session is not None
     
-    # Test database connection
-    db_ok = False
-    db_error = None
+    # Test PHP API connection (instead of direct database)
+    api_ok = False
+    api_error = None
     try:
-        conn = pymysql.connect(**DB_CONFIG)
-        conn.close()
-        db_ok = True
-    except Exception as e:
-        db_error = str(e)
-        print(f"Database connection error: {db_error}")
+        # Test PHP API by calling get_job with a test ID (should return 404, but confirms API is reachable)
+        url = f"{PHP_API_BASE}/get_job.php"
+        response = requests.get(url, params={'job_id': 999999}, timeout=5)
+        # 404 is OK (job doesn't exist), 400 is OK (missing param), but 500 or connection error is bad
+        if response.status_code in [200, 400, 404]:
+            api_ok = True
+        else:
+            api_error = f"PHP API returned HTTP {response.status_code}"
+    except requests.exceptions.RequestException as e:
+        api_error = f"PHP API unreachable: {str(e)}"
+        print(f"PHP API connection error: {api_error}")
     
     return jsonify({
-        "status": "ok" if detection_ok and db_ok else "partial",
+        "status": "ok" if detection_ok and api_ok else "partial",
         "detection": {
             "status": "ok" if detection_ok else "error",
             "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
         },
         "training": {
-            "status": "ok" if db_ok else "error",
-            "database": "connected" if db_ok else "disconnected",
-            "error": db_error if db_error else None
+            "status": "ok" if api_ok else "error",
+            "database": "connected" if api_ok else "disconnected",
+            "method": "PHP API Gateway",
+            "error": api_error if api_error else None
         }
     })
 
