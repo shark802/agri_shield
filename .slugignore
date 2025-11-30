@@ -38,18 +38,19 @@ build/
 
 # Large model files (will be downloaded during training)
 # BUT: Allow default model from git (models/best 2.onnx)
-# IMPORTANT: Include exceptions BEFORE exclusions
-!models/
-!models/best 2.onnx
+# Note: Negation patterns (!) must come AFTER exclusion patterns
 *.pt
 *.pth
 *.onnx
+models/
 models/job_*/
 models/*/
 runs/
 weights/
 *.h5
 *.pb
+# Allow default model (must come after models/ exclusion)
+!models/best 2.onnx
 
 # Dataset files (downloaded from server)
 training_data/
