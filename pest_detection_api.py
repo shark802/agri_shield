@@ -50,6 +50,18 @@ session = None
 input_details = None
 output_details = None
 
+# Detection thresholds (configurable via environment variables)
+DETECTION_CONF_THRESHOLD = float(os.getenv('DETECTION_CONF_THRESHOLD', '0.15'))  # Base confidence threshold (15%)
+CLASSIFICATION_MIN_THRESHOLD = float(os.getenv('CLASSIFICATION_MIN_THRESHOLD', '0.3'))  # Minimum for classification (30%)
+CONFIDENCE_GAP_REQUIREMENT = float(os.getenv('CONFIDENCE_GAP_REQUIREMENT', '0.1'))  # Required gap between top classes (10%)
+YOLO_CONF_THRESHOLD = float(os.getenv('YOLO_CONF_THRESHOLD', '0.25'))  # Minimum for YOLO (25%)
+
+print(f"📊 Detection thresholds configured:")
+print(f"   Base threshold: {DETECTION_CONF_THRESHOLD}")
+print(f"   Classification min: {CLASSIFICATION_MIN_THRESHOLD}")
+print(f"   Confidence gap: {CONFIDENCE_GAP_REQUIREMENT}")
+print(f"   YOLO threshold: {YOLO_CONF_THRESHOLD}")
+
 def find_onnx_model() -> str:
     """Find ONNX model file - checks local files and downloads from server if needed"""
     base_dir = Path(__file__).resolve().parent
@@ -431,7 +443,10 @@ def preprocess_image(image: Image.Image, input_shape: tuple) -> np.ndarray:
     
     return img_array
 
-def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) -> Dict[str, int]:
+def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) -> Dict[str, int]:
+    """Postprocess ONNX model output to get pest counts (supports both classification and YOLO)"""
+    if conf_threshold is None:
+        conf_threshold = DETECTION_CONF_THRESHOLD
     """Postprocess ONNX model output to get pest counts (supports both classification and YOLO)"""
     counts = {name: 0 for name in CLASS_NAMES}
     
@@ -466,21 +481,21 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) ->
             
             # Higher threshold for classification to reduce false positives
             # Also check if max confidence is significantly higher than other classes
-            min_conf_threshold = max(conf_threshold, 0.3)  # At least 30% confidence for classification
+            min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)  # At least configured minimum for classification
             second_max_conf = float(np.partition(class_probs, -2)[-2]) if len(class_probs) > 1 else 0
             confidence_gap = max_conf - second_max_conf
             
             print(f"🔍 Confidence check: max={max_conf:.4f}, second_max={second_max_conf:.4f}, gap={confidence_gap:.4f}, min_threshold={min_conf_threshold:.4f}")
             
             # Require: high confidence AND significant gap from other classes (reduces false positives)
-            if max_conf >= min_conf_threshold and confidence_gap >= 0.1 and 0 <= max_class < len(CLASS_NAMES):
+            if max_conf >= min_conf_threshold and confidence_gap >= CONFIDENCE_GAP_REQUIREMENT and 0 <= max_class < len(CLASS_NAMES):
                 counts[CLASS_NAMES[max_class]] = 1  # Classification: only 1 detection
                 print(f"✅ Detection accepted: {CLASS_NAMES[max_class]} (conf={max_conf:.4f}, gap={confidence_gap:.4f})")
             else:
                 if max_conf < min_conf_threshold:
                     print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < minimum threshold {min_conf_threshold:.4f}")
-                elif confidence_gap < 0.1:
-                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < 0.1) - likely false positive")
+                elif confidence_gap < CONFIDENCE_GAP_REQUIREMENT:
+                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < {CONFIDENCE_GAP_REQUIREMENT}) - likely false positive")
                 else:
                     print(f"⚠️  Detection rejected: class index out of range")
         else:
@@ -584,8 +599,8 @@ def detect() -> Any:
     if len(output_data.shape) >= 2:
         print(f"🔍 Model output sample (first 5 values): {output_data.flatten()[:5]}")
     
-    # Postprocess with standard threshold
-    counts = postprocess_output(output_data, conf_threshold=0.15)
+    # Postprocess with configured threshold
+    counts = postprocess_output(output_data, conf_threshold=DETECTION_CONF_THRESHOLD)
     total_detections = sum(counts.values())
     
     # Don't lower threshold automatically - this causes false positives
