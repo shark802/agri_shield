@@ -458,8 +458,18 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
     
     # Handle different output shapes
     if len(output_data.shape) == 3:
-        # Shape: [1, num_detections, features] or [batch, detections, features]
-        detections = output_data[0]
+        # Shape could be [batch, features, num_detections] or [batch, num_detections, features]
+        output_data = output_data[0]  # Remove batch dimension
+        
+        # Check if it's [features, num_detections] format (transpose needed)
+        # YOLO models often output [batch, features, num_detections]
+        if output_data.shape[0] < output_data.shape[1]:
+            # Likely [features, num_detections] - transpose to [num_detections, features]
+            print(f"🔍 Transposing output from {output_data.shape} to {output_data.T.shape}")
+            detections = output_data.T
+        else:
+            # Likely [num_detections, features] - use as is
+            detections = output_data
     elif len(output_data.shape) == 2:
         # Shape: [num_detections, features]
         detections = output_data
@@ -522,16 +532,32 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
         class_id = None
         
         # Check if it's YOLO format (has bounding box coordinates)
+        # YOLO output format: [x, y, w, h, objectness, class_prob_0, class_prob_1, ...]
+        # Or: [x, y, w, h, conf, class_id] (if class_id is already determined)
+        # Or: [x, y, w, h, class_conf_0, class_conf_1, ...] (class-specific confidences)
+        
         if len(detection) >= 6:
-            # Standard YOLO: [x, y, w, h, conf, class_id]
+            # Try standard format: [x, y, w, h, conf, class_id]
             conf = float(detection[4])
             class_id = int(detection[5])
         elif len(detection) >= 5:
-            # Alternative: [x, y, w, h, conf] (class_id might be separate)
-            conf = float(detection[4])
-            # Try to find class_id in remaining values
+            # Format: [x, y, w, h, objectness, class_probs...]
+            # Or: [x, y, w, h, conf] with class_id elsewhere
+            objectness = float(detection[4])
+            
+            # If we have more than 5 values, check if they're class probabilities
             if len(detection) > 5:
-                class_id = int(detection[5])
+                # Extract class probabilities (indices 5 onwards)
+                class_probs = np.array(detection[5:])
+                max_class_idx = int(np.argmax(class_probs))
+                max_class_prob = float(class_probs[max_class_idx])
+                
+                # Combined confidence = objectness * class_probability
+                conf = objectness * max_class_prob
+                class_id = max_class_idx
+            else:
+                # Just objectness, no class info - skip
+                continue
         
         if conf is not None and class_id is not None:
             if i < 3:  # Log first 3 detections for debugging
