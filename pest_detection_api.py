@@ -359,18 +359,31 @@ def health() -> Any:
 # ============================================================================
 
 def preprocess_image(image: Image.Image, input_shape: tuple) -> np.ndarray:
-    """Preprocess image for ONNX model"""
+    """Preprocess image for ONNX model (supports both classification and YOLO)"""
     if len(input_shape) == 4:
         if input_shape[1] == 3:  # NCHW format
             h, w = input_shape[2], input_shape[3]
         else:  # NHWC format
             h, w = input_shape[1], input_shape[2]
     else:
-        h, w = 512, 512  # Default
+        # Default: Check if model is YOLO (640x640) or classification (224x224 or 512x512)
+        # Try to detect from model path or use 640 for YOLO
+        if ONNX_MODEL_PATH and 'yolo' in ONNX_MODEL_PATH.lower():
+            h, w = 640, 640  # YOLO standard size
+        else:
+            h, w = 512, 512  # Default for classification
     
-    img = image.resize((w, h))
-    img_array = np.array(img, dtype=np.float32)
-    img_array = img_array / 255.0
+    # Resize maintaining aspect ratio (YOLO style)
+    img_ratio = min(w / image.width, h / image.height)
+    new_w, new_h = int(image.width * img_ratio), int(image.height * img_ratio)
+    img_resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    # Create padded image
+    img_padded = Image.new('RGB', (w, h), (114, 114, 114))  # Gray padding
+    img_padded.paste(img_resized, ((w - new_w) // 2, (h - new_h) // 2))
+    
+    img_array = np.array(img_padded, dtype=np.float32)
+    img_array = img_array / 255.0  # Normalize to [0, 1]
     
     if len(img_array.shape) == 3:  # HWC
         img_array = np.transpose(img_array, (2, 0, 1))  # HWC -> CHW
@@ -379,21 +392,62 @@ def preprocess_image(image: Image.Image, input_shape: tuple) -> np.ndarray:
     return img_array
 
 def postprocess_output(output_data: np.ndarray, conf_threshold: float = 0.15) -> Dict[str, int]:
-    """Postprocess ONNX model output to get pest counts"""
+    """Postprocess ONNX model output to get pest counts (supports both classification and YOLO)"""
     counts = {name: 0 for name in CLASS_NAMES}
     
+    if len(CLASS_NAMES) == 0:
+        return counts
+    
+    # Handle different output shapes
     if len(output_data.shape) == 3:
+        # Shape: [1, num_detections, features] or [batch, detections, features]
         detections = output_data[0]
     elif len(output_data.shape) == 2:
+        # Shape: [num_detections, features]
         detections = output_data
+    elif len(output_data.shape) == 4:
+        # Shape: [1, classes, H, W] - Classification model output
+        # Convert to detection format (not ideal, but for backward compatibility)
+        output_data = output_data[0]  # Remove batch dimension
+        if output_data.shape[0] == len(CLASS_NAMES):
+            # Classification output: [classes, H, W] -> get max class
+            class_probs = np.mean(output_data, axis=(1, 2))  # Average over spatial dimensions
+            max_class = int(np.argmax(class_probs))
+            max_conf = float(np.max(class_probs))
+            if max_conf >= conf_threshold and 0 <= max_class < len(CLASS_NAMES):
+                counts[CLASS_NAMES[max_class]] = 1  # Classification: only 1 detection
+        return counts
     else:
         return counts
     
+    # Process detections (YOLO format: [x, y, w, h, conf, class_id, ...] or [x1, y1, x2, y2, conf, class_id, ...])
     for detection in detections:
+        if len(detection) < 6:
+            continue
+        
+        # YOLO output format can vary:
+        # Format 1: [x_center, y_center, width, height, confidence, class_id, ...]
+        # Format 2: [x1, y1, x2, y2, confidence, class_id, ...]
+        # Format 3: [batch, x, y, w, h, conf, class_id, ...] (if batch dimension present)
+        
+        # Try to find confidence and class_id
+        # Usually at indices 4 and 5, but could be different
+        conf = None
+        class_id = None
+        
+        # Check if it's YOLO format (has bounding box coordinates)
         if len(detection) >= 6:
+            # Standard YOLO: [x, y, w, h, conf, class_id]
             conf = float(detection[4])
             class_id = int(detection[5])
-            
+        elif len(detection) >= 5:
+            # Alternative: [x, y, w, h, conf] (class_id might be separate)
+            conf = float(detection[4])
+            # Try to find class_id in remaining values
+            if len(detection) > 5:
+                class_id = int(detection[5])
+        
+        if conf is not None and class_id is not None:
             if conf >= conf_threshold and 0 <= class_id < len(CLASS_NAMES):
                 counts[CLASS_NAMES[class_id]] += 1
     
@@ -424,8 +478,17 @@ def detect() -> Any:
     t0 = time.time()
     
     # Preprocess
-    input_shape = input_details.shape if input_details.shape else [1, 3, 512, 512]
-    input_data = preprocess_image(img, input_shape)
+    # Get input shape from model, default to 640x640 for YOLO or 512x512 for classification
+    if input_details.shape:
+        input_shape = input_details.shape
+    else:
+        # Try to detect model type from path
+        if ONNX_MODEL_PATH and ('yolo' in ONNX_MODEL_PATH.lower() or 'job_' in ONNX_MODEL_PATH):
+            input_shape = [1, 3, 640, 640]  # YOLO standard
+        else:
+            input_shape = [1, 3, 512, 512]  # Classification default
+    
+    input_data = preprocess_image(img, tuple(input_shape))
     
     # Run inference
     input_name = input_details.name
