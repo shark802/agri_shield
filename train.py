@@ -24,7 +24,13 @@ import json
 import time
 import logging
 import argparse
-import pymysql
+# pymysql is optional - we use PHP API gateway instead
+try:
+    import pymysql
+    PYMYSQL_AVAILABLE = True
+except ImportError:
+    PYMYSQL_AVAILABLE = False
+    print("[INFO] pymysql not available - using PHP API gateway for database access", flush=True)
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -114,9 +120,10 @@ DB_CONFIG = {
     'charset': os.getenv('DB_CHARSET', 'utf8mb4')
 }
 
-# Only use config.php if environment variables are not set
-if not os.getenv('DB_HOST') and not os.getenv('DB_USER'):
-    # Check if we can connect to local database first
+# Database config - only needed if pymysql is available and we're running locally
+# On Heroku, we use PHP API gateway instead
+if PYMYSQL_AVAILABLE and not os.getenv('DB_HOST') and not os.getenv('DB_USER'):
+    # Check if we can connect to local database first (local development only)
     try:
         test_conn = pymysql.connect(
             host='localhost',
@@ -126,6 +133,13 @@ if not os.getenv('DB_HOST') and not os.getenv('DB_USER'):
         )
         test_conn.close()
         print("[OK] Using local database (localhost/root/asdb)", flush=True)
+        DB_CONFIG = {
+            'host': 'localhost',
+            'user': 'root',
+            'password': '',
+            'database': 'asdb',
+            'charset': 'utf8mb4'
+        }
     except Exception:
         # If local fails, try config.php credentials
         print("[WARNING] Local database not accessible, trying config.php credentials...", flush=True)
@@ -137,8 +151,10 @@ if not os.getenv('DB_HOST') and not os.getenv('DB_USER'):
             'charset': 'utf8mb4'
         }
         print(f"[INFO] Using database from config.php: {DB_CONFIG['host']} / {DB_CONFIG['database']}", flush=True)
-
-print(f"[OK] Database config: {DB_CONFIG['host']} / {DB_CONFIG['database']}", flush=True)
+else:
+    # On Heroku or when pymysql is not available, use PHP API gateway
+    DB_CONFIG = None
+    print("[INFO] Using PHP API gateway for database access (no direct MySQL connection)", flush=True)
 
 class AdminTrainingLogger:
     """Custom logger that writes to database"""
@@ -480,7 +496,10 @@ class ModelTrainer:
         return epoch_loss, epoch_acc
     
     def save_metrics_to_db(self, epoch, train_loss, train_acc, val_loss, val_acc):
-        """Save training metrics to database"""
+        """Save training metrics to database (optional - only if pymysql available)"""
+        if not PYMYSQL_AVAILABLE or not DB_CONFIG:
+            # Skip if pymysql not available (we're on Heroku using PHP API)
+            return
         try:
             conn = pymysql.connect(**DB_CONFIG)
             cursor = conn.cursor()
@@ -587,29 +606,38 @@ class ModelTrainer:
             # Get model size
             model_size_mb = model_path.stat().st_size / (1024 * 1024)
             
-            # Save to database
-            conn = pymysql.connect(**DB_CONFIG)
-            cursor = conn.cursor()
-            
-            # Generate version number
-            cursor.execute("SELECT MAX(CAST(SUBSTRING(version, 2) AS UNSIGNED)) FROM model_versions")
-            result = cursor.fetchone()
-            next_version = (result[0] or 0) + 1
-            
-            # Deactivate all previous models
-            cursor.execute("UPDATE model_versions SET is_active = 0, is_current = 0")
-            
-            # Insert new model as active
-            cursor.execute(
-                "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, 1, NOW())",
-                (f"v{next_version}", str(model_path), accuracy/100, self.job_id, model_size_mb)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.info(f"[OK] Model v{next_version} saved and automatically activated with accuracy: {accuracy:.2f}%")
-            self.logger.info(f"[INFO] All previous models have been deactivated")
+            # Save to database (only if pymysql available - on Heroku we skip this)
+            if PYMYSQL_AVAILABLE and DB_CONFIG:
+                try:
+                    conn = pymysql.connect(**DB_CONFIG)
+                    cursor = conn.cursor()
+                    
+                    # Generate version number
+                    cursor.execute("SELECT MAX(CAST(SUBSTRING(version, 2) AS UNSIGNED)) FROM model_versions")
+                    result = cursor.fetchone()
+                    next_version = (result[0] or 0) + 1
+                    
+                    # Deactivate all previous models
+                    cursor.execute("UPDATE model_versions SET is_active = 0, is_current = 0")
+                    
+                    # Insert new model as active
+                    cursor.execute(
+                        "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, 1, NOW())",
+                        (f"v{next_version}", str(model_path), accuracy/100, self.job_id, model_size_mb)
+                    )
+                    
+                    conn.commit()
+                    conn.close()
+                    
+                    self.logger.info(f"[OK] Model v{next_version} saved and automatically activated with accuracy: {accuracy:.2f}%")
+                    self.logger.info(f"[INFO] All previous models have been deactivated")
+                except Exception as e:
+                    self.logger.warning(f"Could not save model to database (using PHP API): {e}")
+                    self.logger.info(f"[OK] Model saved to: {model_path} with accuracy: {accuracy:.2f}%")
+            else:
+                # On Heroku - model is saved but not registered in DB (can be done via PHP API later)
+                self.logger.info(f"[OK] Model saved to: {model_path} with accuracy: {accuracy:.2f}%")
+                self.logger.info(f"[INFO] Model registration in database can be done via PHP API if needed")
             
         except Exception as e:
             self.logger.error(f"Failed to save model: {e}")
@@ -693,16 +721,24 @@ def create_combined_dataset(logger):
         print(f"[INFO] Checking database for imported images...", flush=True)
         logger.info("Checking database for imported images")
         
-        try:
-            conn = pymysql.connect(**DB_CONFIG)
-            cursor = conn.cursor()
-            
-            # Get all images from training_images table
-            cursor.execute("SELECT file_path, pest_class FROM training_images WHERE is_verified = 1")
-            db_images = cursor.fetchall()
-            conn.close()
-            
-            if db_images and len(db_images) > 0:
+        # Only try database if pymysql is available (local development)
+        if not PYMYSQL_AVAILABLE or not DB_CONFIG:
+            print("[INFO] Skipping database image lookup (using PHP API gateway)", flush=True)
+            db_images = []
+        else:
+            try:
+                conn = pymysql.connect(**DB_CONFIG)
+                cursor = conn.cursor()
+                
+                # Get all images from training_images table
+                cursor.execute("SELECT file_path, pest_class FROM training_images WHERE is_verified = 1")
+                db_images = cursor.fetchall()
+                conn.close()
+            except Exception as e:
+                print(f"[WARNING] Could not access database for images: {e}", flush=True)
+                db_images = []
+        
+        if db_images and len(db_images) > 0:
                 print(f"[OK] Found {len(db_images)} images in database", flush=True)
                 logger.info(f"Found {len(db_images)} images in database")
                 
