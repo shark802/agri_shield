@@ -37,10 +37,15 @@ build/
 *.egg
 
 # Large model files (will be downloaded during training)
+# BUT: Allow default model from git (models/best 2.onnx)
 *.pt
 *.pth
 *.onnx
+!models/best 2.onnx
 models/
+!models/
+models/job_*/
+models/*/
 runs/
 weights/
 *.h5
