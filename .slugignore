@@ -1,0 +1,69 @@
+# Exclude unnecessary files from Heroku slug
+# Documentation
+*.md
+README*
+docs/
+*.txt
+!requirements.txt
+!Aptfile
+
+# Development files
+.git/
+.gitignore
+.idea/
+.vscode/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+
+# Test files
+tests/
+test_*.py
+*_test.py
+*.test.py
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Large model files (will be downloaded during training)
+*.pt
+*.pth
+*.onnx
+models/
+runs/
+weights/
+*.h5
+*.pb
+
+# Dataset files (downloaded from server)
+training_data/
+datasets/
+data/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Colab and deployment folders (if not needed)
+colab/
+deployment/scripts/
+deployment/models/
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
