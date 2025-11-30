@@ -685,6 +685,80 @@ def load_classes_from_yaml(yaml_path):
         print(f"Warning: Could not load classes from {yaml_path}: {e}", flush=True)
         return None
 
+def download_dataset_from_server(script_dir, logger):
+    """Download organized dataset from web server if not available locally"""
+    try:
+        import requests
+        import zipfile
+        import tempfile
+        
+        # Check if dataset already exists locally
+        organized_dir = script_dir / "training_data" / "dataset_organized"
+        if organized_dir.exists() and (organized_dir / "data.yaml").exists():
+            print("[INFO] Dataset already exists locally, skipping download", flush=True)
+            return True
+        
+        # Get PHP API base URL
+        php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+        download_url = f"{php_api_base}/download_dataset.php?format=zip"
+        
+        print(f"[INFO] Downloading dataset from server...", flush=True)
+        print(f"  URL: {download_url}", flush=True)
+        logger.info(f"Downloading dataset from {download_url}")
+        
+        # Download ZIP file
+        response = requests.get(download_url, timeout=300, stream=True)  # 5 min timeout for large files
+        
+        if response.status_code != 200:
+            print(f"[ERROR] Failed to download dataset: HTTP {response.status_code}", flush=True)
+            logger.error(f"Dataset download failed: HTTP {response.status_code}")
+            if response.status_code == 404:
+                print("[ERROR] Dataset not found on server. Please upload a dataset first.", flush=True)
+            return False
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+            tmp_zip_path = tmp_file.name
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    tmp_file.write(chunk)
+        
+        print(f"[OK] Dataset downloaded ({os.path.getsize(tmp_zip_path) / 1024 / 1024:.1f} MB)", flush=True)
+        logger.info(f"Dataset downloaded: {os.path.getsize(tmp_zip_path) / 1024 / 1024:.1f} MB")
+        
+        # Extract ZIP
+        print("[INFO] Extracting dataset...", flush=True)
+        logger.info("Extracting dataset")
+        
+        # Create training_data directory if it doesn't exist
+        training_data_dir = script_dir / "training_data"
+        training_data_dir.mkdir(parents=True, exist_ok=True)
+        
+        with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(training_data_dir)
+        
+        # Clean up temporary ZIP
+        os.unlink(tmp_zip_path)
+        
+        # Verify extraction
+        if (organized_dir / "data.yaml").exists():
+            print(f"[OK] Dataset extracted successfully to {organized_dir}", flush=True)
+            logger.info(f"Dataset extracted to {organized_dir}")
+            return True
+        else:
+            print("[ERROR] Dataset extracted but data.yaml not found", flush=True)
+            logger.error("Dataset extracted but data.yaml not found")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Network error downloading dataset: {e}", flush=True)
+        logger.error(f"Network error downloading dataset: {e}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Error downloading dataset: {e}", flush=True)
+        logger.error(f"Error downloading dataset: {e}")
+        return False
+
 def create_combined_dataset(logger):
     """Create combined dataset from original and collected data"""
     import sys
@@ -693,6 +767,16 @@ def create_combined_dataset(logger):
     
     # Directories - use parent directory (Proto1/)
     script_dir = Path(__file__).resolve().parent
+    
+    # PRIORITY 0: Download dataset from server if not available locally (for Heroku)
+    organized_dir = script_dir / "training_data" / "dataset_organized"
+    if not organized_dir.exists() or not (organized_dir / "data.yaml").exists():
+        print("[INFO] Dataset not found locally, attempting to download from server...", flush=True)
+        logger.info("Dataset not found locally, attempting download from server")
+        download_success = download_dataset_from_server(script_dir, logger)
+        if not download_success:
+            print("[WARNING] Could not download dataset from server, will try fallback methods...", flush=True)
+            logger.warning("Could not download dataset from server, trying fallback methods")
     
     # PRIORITY 1: Check for organized dataset from smart import (has data.yaml)
     organized_dir = script_dir / "training_data" / "dataset_organized"
