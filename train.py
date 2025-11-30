@@ -1563,7 +1563,7 @@ def main():
         # Start training
         model = trainer.train(train_dataset, val_dataset)
         
-        # After training completes, ensure final model is uploaded
+        # After training completes, ensure final model is uploaded and copied to standard location
         if trainer.best_accuracy > 0:
             logger.info(f"Training completed! Final best accuracy: {trainer.best_accuracy:.2f}%")
             print(f"[OK] Training completed! Best accuracy: {trainer.best_accuracy:.2f}%", flush=True)
@@ -1578,7 +1578,17 @@ def main():
             # Check if model was already uploaded, if not upload now
             if onnx_path.exists():
                 logger.info("Verifying final model upload...")
-                # Model should already be uploaded, but log success
+                # Model should already be uploaded, but ensure it's also in standard location
+                # Copy to models/best.onnx for detection API to find it easily
+                standard_model_path = script_dir / "models" / "best.onnx"
+                try:
+                    import shutil
+                    shutil.copy2(onnx_path, standard_model_path)
+                    logger.info(f"Copied model to standard location: {standard_model_path}")
+                    print(f"[OK] Model copied to standard location: best.onnx", flush=True)
+                except Exception as e:
+                    logger.warning(f"Could not copy model to standard location: {e}")
+                    print(f"[WARN] Could not copy model to standard location: {e}", flush=True)
                 print(f"[OK] Model ready: {onnx_path.name}", flush=True)
             elif pth_path.exists():
                 # Only PyTorch model exists, try to convert and upload
@@ -1586,6 +1596,15 @@ def main():
                 onnx_path = trainer.convert_to_onnx(model, pth_path)
                 if onnx_path and onnx_path.exists():
                     trainer.upload_model_to_server(onnx_path, trainer.best_accuracy, 'onnx')
+                    # Also copy to standard location
+                    standard_model_path = script_dir / "models" / "best.onnx"
+                    try:
+                        import shutil
+                        shutil.copy2(onnx_path, standard_model_path)
+                        logger.info(f"Copied model to standard location: {standard_model_path}")
+                        print(f"[OK] Model copied to standard location: best.onnx", flush=True)
+                    except Exception as e:
+                        logger.warning(f"Could not copy model to standard location: {e}")
         
         # Update job status to completed
         update_job_status(args.job_id, 'completed')

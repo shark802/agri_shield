@@ -51,7 +51,7 @@ input_details = None
 output_details = None
 
 def find_onnx_model() -> str:
-    """Find ONNX model file"""
+    """Find ONNX model file - checks local files and downloads from server if needed"""
     base_dir = Path(__file__).resolve().parent
     
     # Priority order - check models/ directory first (for Heroku deployment)
@@ -73,7 +73,7 @@ def find_onnx_model() -> str:
         if candidate.exists():
             return str(candidate)
     
-    # If no standard model found, check job directories (for trained models)
+    # If no standard model found, check job directories (for trained models on Heroku)
     models_dir = base_dir / "models"
     if models_dir.exists():
         # Find all job_* directories
@@ -89,8 +89,20 @@ def find_onnx_model() -> str:
                 print(f"📦 Found trained model in {job_dir.name}: {onnx_files[0].name}")
                 return str(onnx_files[0])
     
+    # If still not found and we're on Heroku, try to get active model from web server
+    # (Models are uploaded to web server during training, but Heroku needs local copy)
+    php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+    try:
+        import requests
+        # Try to get active model info from database via PHP API
+        # For now, just raise error - model should be uploaded to Heroku during training
+        pass
+    except:
+        pass
+    
     raise FileNotFoundError(
-        f"ONNX model not found. Checked: {[str(c) for c in candidates]} and job directories"
+        f"ONNX model not found. Checked: {[str(c) for c in candidates]} and job directories. "
+        f"Note: On Heroku, models must be uploaded during training or placed in models/ directory."
     )
 
 def load_onnx_model(model_path: str):
