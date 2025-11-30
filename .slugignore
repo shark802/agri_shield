@@ -38,13 +38,12 @@ build/
 
 # Large model files (will be downloaded during training)
 # BUT: Allow default model from git (models/best 2.onnx)
+# IMPORTANT: Include exceptions BEFORE exclusions
+!models/
+!models/best 2.onnx
 *.pt
 *.pth
 *.onnx
-!models/best 2.onnx
-!models/best*.onnx
-models/
-!models/
 models/job_*/
 models/*/
 runs/

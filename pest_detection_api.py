@@ -156,6 +156,8 @@ if ONNX_AVAILABLE:
             print(f"   Models directory exists. Contents:")
             for item in models_dir.iterdir():
                 print(f"     - {item.name} ({'dir' if item.is_dir() else 'file'})")
+        else:
+            print(f"   Models directory does not exist at: {models_dir}")
         session = None
         input_details = None
         output_details = None
@@ -167,7 +169,6 @@ if ONNX_AVAILABLE:
         input_details = None
         output_details = None
 else:
-    print("⚠️  ONNX Runtime not available")
     session = None
     input_details = None
     output_details = None
