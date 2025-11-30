@@ -51,10 +51,10 @@ input_details = None
 output_details = None
 
 # Detection thresholds (configurable via environment variables)
-DETECTION_CONF_THRESHOLD = float(os.getenv('DETECTION_CONF_THRESHOLD', '0.15'))  # Base confidence threshold (15%)
-CLASSIFICATION_MIN_THRESHOLD = float(os.getenv('CLASSIFICATION_MIN_THRESHOLD', '0.3'))  # Minimum for classification (30%)
-CONFIDENCE_GAP_REQUIREMENT = float(os.getenv('CONFIDENCE_GAP_REQUIREMENT', '0.1'))  # Required gap between top classes (10%)
-YOLO_CONF_THRESHOLD = float(os.getenv('YOLO_CONF_THRESHOLD', '0.25'))  # Minimum for YOLO (25%)
+DETECTION_CONF_THRESHOLD = float(os.getenv('DETECTION_CONF_THRESHOLD', '0.25'))  # Base confidence threshold (25%)
+CLASSIFICATION_MIN_THRESHOLD = float(os.getenv('CLASSIFICATION_MIN_THRESHOLD', '0.5'))  # Minimum for classification (50%)
+CONFIDENCE_GAP_REQUIREMENT = float(os.getenv('CONFIDENCE_GAP_REQUIREMENT', '0.2'))  # Required gap between top classes (20%)
+YOLO_CONF_THRESHOLD = float(os.getenv('YOLO_CONF_THRESHOLD', '0.35'))  # Minimum for YOLO (35%)
 
 print(f"📊 Detection thresholds configured:")
 print(f"   Base threshold: {DETECTION_CONF_THRESHOLD}")
