@@ -1062,13 +1062,32 @@ def create_combined_dataset(logger):
     
     # PRIORITY 0: Download dataset from server if not available locally (for Heroku)
     organized_dir = script_dir / "training_data" / "dataset_organized"
-    if not organized_dir.exists() or not (organized_dir / "data.yaml").exists():
-        print("[INFO] Dataset not found locally, attempting to download from server...", flush=True)
-        logger.info("Dataset not found locally, attempting download from server")
+    organized_yaml_check = organized_dir / "data.yaml"
+    organized_train_images_check = organized_dir / "train" / "images"
+    
+    # Check if we need to download (missing yaml OR missing images)
+    needs_download = (
+        not organized_dir.exists() or 
+        not organized_yaml_check.exists() or
+        not organized_train_images_check.exists() or
+        len(list(organized_train_images_check.glob('*.jpg')) + 
+            list(organized_train_images_check.glob('*.jpeg')) + 
+            list(organized_train_images_check.glob('*.png'))) == 0
+    )
+    
+    if needs_download:
+        print("[INFO] Dataset not found locally or incomplete, attempting to download from server...", flush=True)
+        logger.info("Dataset not found locally or incomplete, attempting download from server")
         download_success = download_dataset_from_server(script_dir, logger)
         if not download_success:
-            print("[WARNING] Could not download dataset from server, will try fallback methods...", flush=True)
-            logger.warning("Could not download dataset from server, trying fallback methods")
+            print("[ERROR] Could not download dataset from server!", flush=True)
+            print("[ERROR] Please ensure a dataset is uploaded on the server.", flush=True)
+            logger.error("Could not download dataset from server")
+            # Don't continue if download failed - we need the dataset
+            raise FileNotFoundError("Dataset download failed. Please upload a dataset first.")
+        else:
+            print("[OK] Dataset downloaded successfully", flush=True)
+            logger.info("Dataset downloaded successfully")
     
     # PRIORITY 1: Check for organized dataset from smart import (has data.yaml)
     organized_dir = script_dir / "training_data" / "dataset_organized"
