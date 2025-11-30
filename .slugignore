@@ -42,6 +42,7 @@ build/
 *.pth
 *.onnx
 !models/best 2.onnx
+!models/best*.onnx
 models/
 !models/
 models/job_*/
