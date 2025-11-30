@@ -642,58 +642,159 @@ class ModelTrainer:
             return None
     
     def upload_model_to_server(self, model_path, accuracy, model_type='onnx'):
-        """Upload model file to web server via PHP API"""
+        """Upload model file to web server via PHP API with retry logic and SSL error handling"""
+        import requests
+        import base64
+        import time
+        
+        # Try to import retry utilities (optional)
         try:
-            import requests
-            import base64
-            
-            php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
-            upload_url = f"{php_api_base}/upload_model.php"
-            
-            if not model_path.exists():
-                self.logger.error(f"Model file not found: {model_path}")
-                return False
-            
-            self.logger.info(f"Uploading model to server...")
-            print(f"[INFO] Uploading model to server...", flush=True)
-            
-            # Read model file and encode to base64
-            with open(model_path, 'rb') as f:
-                model_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            # Prepare upload data
-            upload_data = {
-                'job_id': self.job_id,
-                'accuracy': accuracy,
-                'model_type': model_type,
-                'model_data': model_data
-            }
-            
-            # Upload to server
-            response = requests.post(upload_url, json=upload_data, timeout=300)  # 5 min timeout for large models
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('success'):
-                    model_info = result.get('model', {})
-                    self.logger.info(f"[OK] Model uploaded successfully: {model_info.get('version', 'N/A')}")
-                    self.logger.info(f"  Path: {model_info.get('path', 'N/A')}")
-                    self.logger.info(f"  Size: {model_info.get('size_mb', 0):.2f} MB")
-                    self.logger.info(f"  Accuracy: {accuracy:.2f}%")
-                    print(f"[OK] Model uploaded and activated: {model_info.get('version', 'N/A')}", flush=True)
-                    return True
-                else:
-                    self.logger.error(f"Upload failed: {result.get('error', 'Unknown error')}")
-                    return False
-            else:
-                self.logger.error(f"Upload failed: HTTP {response.status_code} - {response.text}")
-                print(f"[ERROR] Upload failed: HTTP {response.status_code}", flush=True)
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"Failed to upload model: {e}")
-            print(f"[ERROR] Model upload error: {e}", flush=True)
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            RETRY_AVAILABLE = True
+        except ImportError:
+            RETRY_AVAILABLE = False
+            self.logger.warning("urllib3 retry not available, using simple retry logic")
+        
+        php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+        upload_url = f"{php_api_base}/upload_model.php"
+        
+        if not model_path.exists():
+            self.logger.error(f"Model file not found: {model_path}")
             return False
+        
+        model_size_mb = model_path.stat().st_size / (1024 * 1024)
+        self.logger.info(f"Uploading model to server... (Size: {model_size_mb:.2f} MB)")
+        print(f"[INFO] Uploading model to server... ({model_size_mb:.2f} MB)", flush=True)
+        
+        # Read model file and encode to base64
+        try:
+            with open(model_path, 'rb') as f:
+                model_bytes = f.read()
+            model_data = base64.b64encode(model_bytes).decode('utf-8')
+            self.logger.info(f"Model encoded to base64 ({len(model_data)} chars)")
+        except Exception as e:
+            self.logger.error(f"Failed to read/encode model file: {e}")
+            return False
+        
+        # Prepare upload data
+        upload_data = {
+            'job_id': self.job_id,
+            'accuracy': accuracy,
+            'model_type': model_type,
+            'model_data': model_data,
+            'model_size_mb': model_size_mb
+        }
+        
+        # Create session with retry adapter if available
+        if RETRY_AVAILABLE:
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=2,  # Wait 2, 4, 8 seconds between retries
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=["POST"]
+            )
+            session = requests.Session()
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+        else:
+            session = requests.Session()
+        
+        # Upload with retries and better SSL handling
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.logger.info(f"Upload attempt {attempt}/{max_attempts}...")
+                print(f"[INFO] Upload attempt {attempt}/{max_attempts}...", flush=True)
+                
+                # Use longer timeout for large files (10 minutes)
+                response = session.post(
+                    upload_url,
+                    json=upload_data,
+                    timeout=600,  # 10 min timeout for large models
+                    verify=True,  # Verify SSL certificate
+                    stream=False  # Don't stream, send all at once
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('success'):
+                        model_info = result.get('model', {})
+                        self.logger.info(f"[OK] Model uploaded successfully: {model_info.get('version', 'N/A')}")
+                        self.logger.info(f"  Path: {model_info.get('path', 'N/A')}")
+                        self.logger.info(f"  Size: {model_info.get('size_mb', 0):.2f} MB")
+                        self.logger.info(f"  Accuracy: {accuracy:.2f}%")
+                        print(f"[OK] Model uploaded and activated: {model_info.get('version', 'N/A')}", flush=True)
+                        return True
+                    else:
+                        error_msg = result.get('error', 'Unknown error')
+                        self.logger.error(f"Upload failed: {error_msg}")
+                        if attempt < max_attempts:
+                            wait_time = 2 ** attempt
+                            print(f"[WARN] Retrying in {wait_time} seconds...", flush=True)
+                            time.sleep(wait_time)
+                            continue
+                        return False
+                else:
+                    error_text = response.text[:500] if response.text else "No error message"
+                    self.logger.error(f"Upload failed: HTTP {response.status_code} - {error_text}")
+                    if attempt < max_attempts:
+                        wait_time = 2 ** attempt
+                        print(f"[WARN] HTTP {response.status_code}, retrying in {wait_time} seconds...", flush=True)
+                        time.sleep(wait_time)
+                        continue
+                    return False
+                    
+            except requests.exceptions.SSLError as e:
+                self.logger.warning(f"SSL error on attempt {attempt}: {e}")
+                if attempt < max_attempts:
+                    wait_time = 2 ** attempt
+                    print(f"[WARN] SSL error, retrying in {wait_time} seconds...", flush=True)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(f"SSL error after {max_attempts} attempts: {e}")
+                    print(f"[ERROR] SSL connection failed after {max_attempts} attempts", flush=True)
+                    return False
+                    
+            except requests.exceptions.Timeout as e:
+                self.logger.warning(f"Timeout on attempt {attempt}: {e}")
+                if attempt < max_attempts:
+                    wait_time = 2 ** attempt
+                    print(f"[WARN] Timeout, retrying in {wait_time} seconds...", flush=True)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(f"Timeout after {max_attempts} attempts")
+                    print(f"[ERROR] Upload timeout after {max_attempts} attempts", flush=True)
+                    return False
+                    
+            except requests.exceptions.ConnectionError as e:
+                self.logger.warning(f"Connection error on attempt {attempt}: {e}")
+                if attempt < max_attempts:
+                    wait_time = 2 ** attempt
+                    print(f"[WARN] Connection error, retrying in {wait_time} seconds...", flush=True)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(f"Connection error after {max_attempts} attempts: {e}")
+                    print(f"[ERROR] Connection failed after {max_attempts} attempts", flush=True)
+                    return False
+                    
+            except Exception as e:
+                self.logger.error(f"Unexpected error on attempt {attempt}: {e}")
+                if attempt < max_attempts:
+                    wait_time = 2 ** attempt
+                    print(f"[WARN] Error occurred, retrying in {wait_time} seconds...", flush=True)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(f"Failed to upload model after {max_attempts} attempts: {e}")
+                    print(f"[ERROR] Model upload error: {e}", flush=True)
+                    return False
+        
+        return False
     
     def save_model(self, model, accuracy, classes):
         """Save model to database and file system - Auto-activates new model"""
