@@ -739,84 +739,81 @@ def create_combined_dataset(logger):
                 db_images = []
         
         if db_images and len(db_images) > 0:
-                print(f"[OK] Found {len(db_images)} images in database", flush=True)
-                logger.info(f"Found {len(db_images)} images in database")
-                
-                # Create classification-ready dataset structure
-                classification_train_dir = organized_dir / "classification" / "train"
-                classification_val_dir = organized_dir / "classification" / "val"
-                
-                # Create class folders
-                for split_dir in [classification_train_dir, classification_val_dir]:
-                    split_dir.mkdir(parents=True, exist_ok=True)
-                    for class_name in pest_classes:
-                        (split_dir / class_name).mkdir(exist_ok=True)
-                
-                # Normalize pest_class names to match YAML classes (handle variations)
-                def normalize_class_name(db_class):
-                    """Normalize database class name to match YAML class names"""
-                    db_class_lower = db_class.lower().replace(' ', '_').replace('-', '_')
-                    # Try exact match first
-                    for yaml_class in pest_classes:
-                        if db_class_lower == yaml_class.lower():
-                            return yaml_class
-                    # Try partial match
-                    for yaml_class in pest_classes:
-                        if yaml_class.lower() in db_class_lower or db_class_lower in yaml_class.lower():
-                            return yaml_class
-                    return None
-                
-                # Reorganize images from database
-                import random
-                random.seed(42)
-                train_count = 0
-                val_count = 0
-                
-                for file_path, db_pest_class in db_images:
-                    img_path = Path(file_path)
+            print(f"[OK] Found {len(db_images)} images in database", flush=True)
+            logger.info(f"Found {len(db_images)} images in database")
+            
+            # Create classification-ready dataset structure
+            classification_train_dir = organized_dir / "classification" / "train"
+            classification_val_dir = organized_dir / "classification" / "val"
+            
+            # Create class folders
+            for split_dir in [classification_train_dir, classification_val_dir]:
+                split_dir.mkdir(parents=True, exist_ok=True)
+                for class_name in pest_classes:
+                    (split_dir / class_name).mkdir(exist_ok=True)
+            
+            # Normalize pest_class names to match YAML classes (handle variations)
+            def normalize_class_name(db_class):
+                """Normalize database class name to match YAML class names"""
+                db_class_lower = db_class.lower().replace(' ', '_').replace('-', '_')
+                # Try exact match first
+                for yaml_class in pest_classes:
+                    if db_class_lower == yaml_class.lower():
+                        return yaml_class
+                # Try partial match
+                for yaml_class in pest_classes:
+                    if yaml_class.lower() in db_class_lower or db_class_lower in yaml_class.lower():
+                        return yaml_class
+                return None
+            
+            # Reorganize images from database
+            import random
+            random.seed(42)
+            train_count = 0
+            val_count = 0
+            
+            for file_path, db_pest_class in db_images:
+                img_path = Path(file_path)
+                if not img_path.exists():
+                    # Try relative path from script directory
+                    img_path = script_dir / file_path.lstrip('/')
                     if not img_path.exists():
-                        # Try relative path from script directory
-                        img_path = script_dir / file_path.lstrip('/')
-                        if not img_path.exists():
-                            continue
-                    
-                    # Normalize class name
-                    class_name = normalize_class_name(db_pest_class)
-                    if not class_name:
-                        logger.warning(f"Could not map database class '{db_pest_class}' to YAML classes")
                         continue
-                    
-                    # Split 80% train, 20% val
-                    is_train = random.random() < 0.8
-                    dest_dir = classification_train_dir if is_train else classification_val_dir
-                    dest = dest_dir / class_name / img_path.name
-                    
-                    if not dest.exists():
-                        try:
-                            shutil.copy2(img_path, dest)
-                            if is_train:
-                                train_count += 1
-                            else:
-                                val_count += 1
-                        except Exception as e:
-                            logger.warning(f"Error copying {img_path}: {e}")
-                            continue
                 
-                if train_count > 0 or val_count > 0:
-                    print(f"[OK] Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val", flush=True)
-                    logger.info(f"Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val")
-                    print(f"  Using reorganized dataset at: {classification_train_dir}", flush=True)
-                    sys.stdout.flush()
-                    return classification_train_dir, classification_val_dir, pest_classes
-                else:
-                    print(f"[WARN] Could not copy images from database, trying YOLO labels...", flush=True)
-                    logger.warning("Could not copy images from database, trying YOLO labels")
+                # Normalize class name
+                class_name = normalize_class_name(db_pest_class)
+                if not class_name:
+                    logger.warning(f"Could not map database class '{db_pest_class}' to YAML classes")
+                    continue
+                
+                # Split 80% train, 20% val
+                is_train = random.random() < 0.8
+                dest_dir = classification_train_dir if is_train else classification_val_dir
+                dest = dest_dir / class_name / img_path.name
+                
+                if not dest.exists():
+                    try:
+                        shutil.copy2(img_path, dest)
+                        if is_train:
+                            train_count += 1
+                        else:
+                            val_count += 1
+                    except Exception as e:
+                        logger.warning(f"Error copying {img_path}: {e}")
+                        continue
+            
+            if train_count > 0 or val_count > 0:
+                print(f"[OK] Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val", flush=True)
+                logger.info(f"Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val")
+                print(f"  Using reorganized dataset at: {classification_train_dir}", flush=True)
+                sys.stdout.flush()
+                return classification_train_dir, classification_val_dir, pest_classes
             else:
-                print(f"[INFO] No images found in database, trying YOLO format...", flush=True)
-                logger.info("No images found in database, trying YOLO format")
-        except Exception as e:
-            print(f"[WARN] Database query failed: {e}, trying YOLO format...", flush=True)
-            logger.warning(f"Database query failed: {e}, trying YOLO format")
+                print(f"[WARN] Could not copy images from database, trying YOLO labels...", flush=True)
+                logger.warning("Could not copy images from database, trying YOLO labels")
+        else:
+            print(f"[INFO] No images found in database, trying YOLO format...", flush=True)
+            logger.info("No images found in database, trying YOLO format")
     
     # PRIORITY 1B: Reorganize from YOLO format (if database method didn't work)
     if organized_yaml.exists() and organized_train_images.exists() and pest_classes:
