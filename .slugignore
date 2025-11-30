@@ -1,11 +1,16 @@
 # Exclude unnecessary files from Heroku slug
+# IMPORTANT: requirements.txt, Aptfile, and Procfile MUST be included!
+
 # Documentation
 *.md
 README*
 docs/
+
+# Text files (but NOT requirements.txt, Aptfile, Procfile)
 *.txt
 !requirements.txt
 !Aptfile
+!Procfile
 
 # Development files
 .git/
