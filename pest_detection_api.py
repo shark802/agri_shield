@@ -55,9 +55,10 @@ def find_onnx_model() -> str:
     base_dir = Path(__file__).resolve().parent
     
     # Priority order - check models/ directory first (for Heroku deployment)
+    # "best 2.onnx" is the default model from git repository
     candidates = [
-        base_dir / "models" / "best 2.onnx",
-        base_dir / "models" / "best.onnx",
+        base_dir / "models" / "best 2.onnx",  # Default model from git (highest priority)
+        base_dir / "models" / "best.onnx",    # Trained models copy here
         base_dir / "models" / "best5.onnx",
         base_dir / "deployment" / "models" / "best 2.onnx",
         base_dir / "deployment" / "models" / "best.onnx",
