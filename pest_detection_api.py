@@ -194,7 +194,15 @@ def run_training(job_id):
             print(f"Job {job_id} not found")
             return
         
-        config = json.loads(job.get('training_config', '{}'))
+        # training_config might be a string (JSON) or already a dict
+        training_config_raw = job.get('training_config', '{}')
+        if isinstance(training_config_raw, str):
+            config = json.loads(training_config_raw)
+        elif isinstance(training_config_raw, dict):
+            config = training_config_raw
+        else:
+            config = {}
+        
         epochs = config.get('epochs', 50)
         batch_size = config.get('batch_size', 8)
         
