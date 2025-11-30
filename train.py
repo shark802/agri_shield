@@ -1401,110 +1401,10 @@ def create_combined_dataset(logger):
     
     return combined_train_dir, combined_val_dir, pest_classes
 
-def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
-    """Train YOLO object detection model using Ultralytics YOLOv8"""
-    try:
-        # Set environment variables to disable GUI dependencies (for Heroku)
-        import os
-        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-        os.environ['DISPLAY'] = ''
-        os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
-        
-        from ultralytics import YOLO
-        
-        logger.info("Starting YOLOv8 object detection training...")
-        print("[INFO] Starting YOLOv8 object detection training...", flush=True)
-        print(f"[INFO] Job ID: {job_id}", flush=True)
-        print(f"[INFO] Epochs: {epochs}, Batch Size: {batch_size}", flush=True)
-        print(f"[INFO] Dataset: {data_yaml_path}", flush=True)
-        
-        # Initialize YOLO model (using nano for smallest size)
-        model = YOLO('yolov8n.pt')  # Nano is smallest YOLOv8 variant
-        logger.info("YOLOv8n model initialized")
-        
-        script_dir = Path(__file__).resolve().parent
-        
-        # Train the model
-        results = model.train(
-            data=str(data_yaml_path),
-            epochs=epochs,
-            batch=batch_size,
-            imgsz=640,
-            device='cpu',
-            project=str(script_dir / "models"),
-            name=f'job_{job_id}',
-            exist_ok=True,
-            verbose=True
-        )
-        
-        # Get best model path
-        best_model_path = script_dir / "models" / f"job_{job_id}" / "weights" / "best.pt"
-        
-        if not best_model_path.exists():
-            best_model_path = script_dir / "runs" / "detect" / f"job_{job_id}" / "weights" / "best.pt"
-        
-        logger.info(f"Training completed. Best model: {best_model_path}")
-        print(f"[OK] Training completed. Best model: {best_model_path}", flush=True)
-        
-        # Export to ONNX
-        if best_model_path.exists():
-            logger.info("Exporting model to ONNX format...")
-            print("[INFO] Exporting model to ONNX...", flush=True)
-            
-            # Load best model and export to ONNX
-            best_model = YOLO(str(best_model_path))
-            best_model.export(format='onnx', imgsz=640, simplify=True)
-            
-            # Find exported ONNX file
-            exported_onnx = best_model_path.with_suffix('.onnx')
-            if not exported_onnx.exists():
-                exported_onnx = best_model_path.parent / (best_model_path.stem + '.onnx')
-            
-            if exported_onnx.exists():
-                # Move to job directory
-                job_model_dir = script_dir / "models" / f"job_{job_id}"
-                job_model_dir.mkdir(parents=True, exist_ok=True)
-                final_onnx = job_model_dir / "best_model.onnx"
-                shutil.copy(exported_onnx, final_onnx)
-                
-                logger.info(f"ONNX model saved: {final_onnx}")
-                print(f"[OK] ONNX model saved: {final_onnx}", flush=True)
-                
-                # Get accuracy from results (mAP50)
-                accuracy = results.results_dict.get('metrics/mAP50(B)', 0) * 100 if hasattr(results, 'results_dict') else 0
-                
-                # Upload to server
-                trainer = ModelTrainer(job_id, {}, logger)
-                upload_success = trainer.upload_model_to_server(final_onnx, accuracy, 'onnx')
-                
-                if upload_success:
-                    logger.info("Model uploaded and activated successfully!")
-                    print("[OK] Model uploaded and activated!", flush=True)
-                else:
-                    logger.warning("Model saved but upload failed")
-                    print("[WARNING] Model saved locally but upload failed", flush=True)
-                
-                return final_onnx
-            else:
-                logger.error("ONNX export failed - file not found")
-                print("[ERROR] ONNX export failed", flush=True)
-        else:
-            logger.error(f"Best model not found at: {best_model_path}")
-            print(f"[ERROR] Best model not found: {best_model_path}", flush=True)
-        
-        return None
-        
-    except ImportError as e:
-        logger.error(f"YOLO library not available: {e}")
-        print(f"[ERROR] YOLO library not available: {e}", flush=True)
-        raise
-    except Exception as e:
-        logger.error(f"YOLO training failed: {e}")
-        print(f"[ERROR] YOLO training failed: {e}", flush=True)
-        raise
+# YOLO training function removed - reverting to classification
 
 def main():
-    """Main training function - Now uses YOLO object detection"""
+    """Main training function - Classification using ResNet18"""
     parser = argparse.ArgumentParser(description='Admin Training Script - YOLO Object Detection')
     parser.add_argument('--job_id', type=int, required=True, help='Training job ID')
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
@@ -1535,81 +1435,101 @@ def main():
         # Update job status to running
         update_job_status(args.job_id, 'running')
         
-        # Find data.yaml file (YOLO format dataset)
-        script_dir = Path(__file__).resolve().parent
-        organized_dir = script_dir / "training_data" / "dataset_organized"
-        
-        # Download dataset if not available locally
-        if not organized_dir.exists() or not (organized_dir / "data.yaml").exists():
-            print("[INFO] Dataset not found locally, downloading from server...", flush=True)
-            logger.info("Dataset not found locally, downloading from server")
-            download_success = download_dataset_from_server(script_dir, logger)
-            if not download_success:
-                error_msg = "Failed to download dataset from server"
-                logger.error(error_msg)
-                update_job_status(args.job_id, 'failed', error_msg)
-                sys.exit(1)
-        
-        data_yaml_path = organized_dir / "data.yaml"
-        
-        if not data_yaml_path.exists():
-            error_msg = f"data.yaml not found at {data_yaml_path}"
-            logger.error(error_msg)
-            print(f"[ERROR] {error_msg}", flush=True)
-            update_job_status(args.job_id, 'failed', error_msg)
-            sys.exit(1)
-        
-        # Verify YOLO dataset structure exists
-        train_images_dir = organized_dir / "train" / "images"
-        train_labels_dir = organized_dir / "train" / "labels"
-        val_images_dir = organized_dir / "valid" / "images"
-        val_labels_dir = organized_dir / "valid" / "labels"
-        
-        if not train_images_dir.exists() or not train_labels_dir.exists():
-            error_msg = f"YOLO dataset structure not found. Expected train/images and train/labels"
-            logger.error(error_msg)
-            print(f"[ERROR] {error_msg}", flush=True)
-            update_job_status(args.job_id, 'failed', error_msg)
-            sys.exit(1)
-        
-        print(f"[OK] YOLO dataset found:", flush=True)
-        print(f"  data.yaml: {data_yaml_path}", flush=True)
-        print(f"  Train images: {train_images_dir}", flush=True)
-        print(f"  Train labels: {train_labels_dir}", flush=True)
-        print(f"  Val images: {val_images_dir}", flush=True)
-        print(f"  Val labels: {val_labels_dir}", flush=True)
-        logger.info(f"YOLO dataset found at {organized_dir}")
-        
-        # Train YOLO model
+        # Create combined dataset - with error handling
         try:
-            onnx_model_path = train_yolo_model(
-                args.job_id,
-                args.epochs,
-                args.batch_size,
-                data_yaml_path,
-                logger
-            )
-            
-            if onnx_model_path and onnx_model_path.exists():
-                logger.info(f"Training job {args.job_id} completed successfully!")
-                print(f"[OK] Training job {args.job_id} completed!", flush=True)
-                update_job_status(args.job_id, 'completed')
-            else:
-                error_msg = "Training completed but model file not found"
-                logger.error(error_msg)
-                print(f"[ERROR] {error_msg}", flush=True)
-                update_job_status(args.job_id, 'failed', error_msg)
-                sys.exit(1)
-                
+            print("Creating dataset...", flush=True)
+            sys.stdout.flush()
+            train_dir, val_dir, classes_from_yaml = create_combined_dataset(logger)
+            print(f"[OK] Dataset created: Train={train_dir}, Val={val_dir}", flush=True)
+            if classes_from_yaml:
+                print(f"[OK] Classes from data.yaml: {len(classes_from_yaml)} classes - {classes_from_yaml}", flush=True)
+            sys.stdout.flush()
         except Exception as e:
             import traceback
-            error_msg = f"YOLO training failed: {str(e)}"
+            error_msg = f"Failed to create dataset: {str(e)}"
             traceback_str = traceback.format_exc()
+            print(f"ERROR: {error_msg}", flush=True)
+            print(f"Traceback: {traceback_str}", flush=True)
             logger.error(error_msg)
             logger.error(traceback_str)
-            print(f"[ERROR] {error_msg}", flush=True)
             update_job_status(args.job_id, 'failed', error_msg)
             sys.exit(1)
+        
+        # Get data transforms
+        print("Creating model trainer...", flush=True)
+        sys.stdout.flush()
+        trainer = ModelTrainer(args.job_id, {
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+            'learning_rate': args.learning_rate
+        }, logger)
+        
+        print("Getting data transforms...", flush=True)
+        sys.stdout.flush()
+        train_transforms, val_transforms = trainer.get_data_transforms()
+        
+        # Create datasets
+        print("Loading datasets...", flush=True)
+        print(f"  Train directory: {train_dir}", flush=True)
+        print(f"  Val directory: {val_dir}", flush=True)
+        if classes_from_yaml:
+            print(f"  Classes from data.yaml: {len(classes_from_yaml)} classes - {classes_from_yaml}", flush=True)
+        sys.stdout.flush()
+        logger.info("Loading datasets...")
+        logger.info(f"Train directory: {train_dir}")
+        logger.info(f"Val directory: {val_dir}")
+        if classes_from_yaml:
+            logger.info(f"Classes from data.yaml: {classes_from_yaml}")
+        
+        # Pass classes from YAML to dataset class so it uses the correct number of classes
+        train_dataset = EnhancedPestDataset(train_dir, transform=train_transforms, logger=logger, classes_from_yaml=classes_from_yaml)
+        val_dataset = EnhancedPestDataset(val_dir, transform=val_transforms, logger=logger, classes_from_yaml=classes_from_yaml)
+        
+        print(f"[OK] Datasets loaded: Train={len(train_dataset)} samples, Val={len(val_dataset)} samples", flush=True)
+        print(f"[INFO] Number of classes detected: {len(train_dataset.classes)}", flush=True)
+        print(f"[INFO] Classes: {train_dataset.classes}", flush=True)
+        sys.stdout.flush()
+        
+        # Log dataset statistics
+        train_stats = train_dataset.get_statistics()
+        val_stats = val_dataset.get_statistics()
+        
+        logger.info(f"Training dataset: {train_stats}")
+        logger.info(f"Validation dataset: {val_stats}")
+        logger.info(f"Number of classes: {len(train_dataset.classes)}")
+        logger.info(f"Classes: {train_dataset.classes}")
+        
+        # Start training
+        model = trainer.train(train_dataset, val_dataset)
+        
+        # After training completes, ensure final model is uploaded
+        if trainer.best_accuracy > 0:
+            logger.info(f"Training completed! Final best accuracy: {trainer.best_accuracy:.2f}%")
+            print(f"[OK] Training completed! Best accuracy: {trainer.best_accuracy:.2f}%", flush=True)
+            
+            # The model should already be saved and uploaded during training (when best model found)
+            # But let's verify and upload final model if needed
+            script_dir = Path(__file__).resolve().parent
+            model_dir = script_dir / "models" / f"job_{args.job_id}"
+            onnx_path = model_dir / "best_model.onnx"
+            pth_path = model_dir / "best_model.pth"
+            
+            # Check if model was already uploaded, if not upload now
+            if onnx_path.exists():
+                logger.info("Verifying final model upload...")
+                # Model should already be uploaded, but log success
+                print(f"[OK] Model ready: {onnx_path.name}", flush=True)
+            elif pth_path.exists():
+                # Only PyTorch model exists, try to convert and upload
+                logger.info("Converting final model to ONNX and uploading...")
+                onnx_path = trainer.convert_to_onnx(model, pth_path)
+                if onnx_path and onnx_path.exists():
+                    trainer.upload_model_to_server(onnx_path, trainer.best_accuracy, 'onnx')
+        
+        # Update job status to completed
+        update_job_status(args.job_id, 'completed')
+        logger.info(f"Training job {args.job_id} completed successfully!")
+        print(f"[OK] Training job {args.job_id} completed!", flush=True)
         
     except Exception as e:
         # Ensure error message is ASCII-safe
