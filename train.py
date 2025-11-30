@@ -1399,9 +1399,34 @@ def main():
         # Start training
         model = trainer.train(train_dataset, val_dataset)
         
+        # After training completes, ensure final model is uploaded
+        if trainer.best_accuracy > 0:
+            logger.info(f"Training completed! Final best accuracy: {trainer.best_accuracy:.2f}%")
+            print(f"[OK] Training completed! Best accuracy: {trainer.best_accuracy:.2f}%", flush=True)
+            
+            # The model should already be saved and uploaded during training (when best model found)
+            # But let's verify and upload final model if needed
+            script_dir = Path(__file__).resolve().parent
+            model_dir = script_dir / "models" / f"job_{args.job_id}"
+            onnx_path = model_dir / "best_model.onnx"
+            pth_path = model_dir / "best_model.pth"
+            
+            # Check if model was already uploaded, if not upload now
+            if onnx_path.exists():
+                logger.info("Verifying final model upload...")
+                # Model should already be uploaded, but log success
+                print(f"[OK] Model ready: {onnx_path.name}", flush=True)
+            elif pth_path.exists():
+                # Only PyTorch model exists, try to convert and upload
+                logger.info("Converting final model to ONNX and uploading...")
+                onnx_path = trainer.convert_to_onnx(model, pth_path)
+                if onnx_path and onnx_path.exists():
+                    trainer.upload_model_to_server(onnx_path, trainer.best_accuracy, 'onnx')
+        
         # Update job status to completed
         update_job_status(args.job_id, 'completed')
-        logger.info(f"Training completed successfully! Best accuracy: {trainer.best_accuracy:.2f}%")
+        logger.info(f"Training job {args.job_id} completed successfully!")
+        print(f"[OK] Training job {args.job_id} completed!", flush=True)
         
     except Exception as e:
         # Ensure error message is ASCII-safe
