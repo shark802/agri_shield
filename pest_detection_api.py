@@ -68,12 +68,29 @@ def find_onnx_model() -> str:
         base_dir / "pest_detection_ml" / "models" / "best.onnx",
     ]
     
+    # Check standard locations first
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
     
+    # If no standard model found, check job directories (for trained models)
+    models_dir = base_dir / "models"
+    if models_dir.exists():
+        # Find all job_* directories
+        job_dirs = sorted([d for d in models_dir.iterdir() if d.is_dir() and d.name.startswith('job_')], 
+                         reverse=True)  # Most recent first
+        
+        for job_dir in job_dirs:
+            # Look for best_model*.onnx files in job directory
+            onnx_files = sorted(job_dir.glob('best_model*.onnx'), 
+                              key=lambda p: p.stat().st_mtime, 
+                              reverse=True)  # Most recent first
+            if onnx_files:
+                print(f"📦 Found trained model in {job_dir.name}: {onnx_files[0].name}")
+                return str(onnx_files[0])
+    
     raise FileNotFoundError(
-        f"ONNX model not found. Checked: {[str(c) for c in candidates]}"
+        f"ONNX model not found. Checked: {[str(c) for c in candidates]} and job directories"
     )
 
 def load_onnx_model(model_path: str):
