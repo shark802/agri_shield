@@ -1402,7 +1402,7 @@ def create_combined_dataset(logger):
     return combined_train_dir, combined_val_dir, pest_classes
 
 def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
-    """Train YOLO object detection model using Ultralytics"""
+    """Train YOLO object detection model using YOLOv5 (lighter than YOLOv8)"""
     try:
         # Set environment variables to disable GUI dependencies (for Heroku)
         import os
@@ -1410,7 +1410,7 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
         os.environ['DISPLAY'] = ''
         os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
         
-        from ultralytics import YOLO
+        import yolov5
         
         logger.info("Starting YOLO object detection training...")
         print("[INFO] Starting YOLO object detection training...", flush=True)
@@ -1418,29 +1418,31 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
         print(f"[INFO] Epochs: {epochs}, Batch Size: {batch_size}", flush=True)
         print(f"[INFO] Dataset: {data_yaml_path}", flush=True)
         
-        # Initialize YOLO model (using nano for smaller size)
-        model = YOLO('yolov8n.pt')  # Start with pre-trained YOLOv8 nano
+        from ultralytics import YOLO
+        
+        # Initialize YOLO model (using nano for smallest size)
+        model = YOLO('yolov8n.pt')  # Nano is smallest YOLOv8 variant
         logger.info("YOLOv8n model initialized")
+        
+        script_dir = Path(__file__).resolve().parent
         
         # Train the model
         results = model.train(
-            data=str(data_yaml_path),  # Path to data.yaml
+            data=str(data_yaml_path),
             epochs=epochs,
             batch=batch_size,
-            imgsz=640,  # Standard YOLO input size
-            device='cpu',  # Use CPU (Heroku doesn't have GPU)
-            project='models',
+            imgsz=640,
+            device='cpu',
+            project=str(script_dir / "models"),
             name=f'job_{job_id}',
             exist_ok=True,
             verbose=True
         )
         
         # Get best model path
-        script_dir = Path(__file__).resolve().parent
         best_model_path = script_dir / "models" / f"job_{job_id}" / "weights" / "best.pt"
         
         if not best_model_path.exists():
-            # Try alternative path
             best_model_path = script_dir / "runs" / "detect" / f"job_{job_id}" / "weights" / "best.pt"
         
         logger.info(f"Training completed. Best model: {best_model_path}")
@@ -1455,10 +1457,9 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
             best_model = YOLO(str(best_model_path))
             best_model.export(format='onnx', imgsz=640, simplify=True)
             
-            # Find exported ONNX file (YOLO exports in same directory as .pt file)
+            # Find exported ONNX file
             exported_onnx = best_model_path.with_suffix('.onnx')
             if not exported_onnx.exists():
-                # Try alternative location
                 exported_onnx = best_model_path.parent / (best_model_path.stem + '.onnx')
             
             if exported_onnx.exists():
@@ -1475,7 +1476,7 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
                 accuracy = results.results_dict.get('metrics/mAP50(B)', 0) * 100 if hasattr(results, 'results_dict') else 0
                 
                 # Upload to server
-                trainer = ModelTrainer(job_id, {}, logger)  # Create minimal trainer for upload
+                trainer = ModelTrainer(job_id, {}, logger)
                 upload_success = trainer.upload_model_to_server(final_onnx, accuracy, 'onnx')
                 
                 if upload_success:
@@ -1495,9 +1496,9 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
         
         return None
         
-    except ImportError:
-        logger.error("Ultralytics YOLO not installed. Install with: pip install ultralytics")
-        print("[ERROR] Ultralytics YOLO not available. Please install: pip install ultralytics", flush=True)
+    except ImportError as e:
+        logger.error(f"YOLOv5 not available: {e}")
+        print(f"[ERROR] YOLOv5 not available: {e}", flush=True)
         raise
     except Exception as e:
         logger.error(f"YOLO training failed: {e}")

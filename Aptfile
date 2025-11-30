@@ -1,7 +1,8 @@
-# System packages for YOLO/Ultralytics on Heroku (Ubuntu 24 compatible)
-# libgl1 provides libGL.so.1 for headless OpenGL support (replaces libgl1-mesa-glx)
-libgl1
-libglib2.0-0
+# System packages for YOLOv5 on Heroku (Ubuntu 24 compatible)
+# YOLOv5 is lighter and may not need OpenGL libraries
+# Try without first - only uncomment if libGL errors occur
+# libgl1
+# libglib2.0-0
 
 
 
