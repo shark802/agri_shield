@@ -146,24 +146,9 @@ if ONNX_AVAILABLE:
         ]
         print(f"✅ Model loaded successfully: {Path(ONNX_MODEL_PATH).name}")
         print(f"   Classes: {CLASS_NAMES}")
-    except FileNotFoundError as e:
-        print(f"⚠️  Model file not found: {e}")
-        print(f"   Current directory: {Path.cwd()}")
-        print(f"   Script directory: {Path(__file__).resolve().parent}")
-        # List what's actually in models/ directory
-        models_dir = Path(__file__).resolve().parent / "models"
-        if models_dir.exists():
-            print(f"   Models directory exists. Contents:")
-            for item in models_dir.iterdir():
-                print(f"     - {item.name} ({'dir' if item.is_dir() else 'file'})")
-        else:
-            print(f"   Models directory does not exist at: {models_dir}")
-        session = None
-        input_details = None
-        output_details = None
     except Exception as e:
-        print(f"⚠️  Could not load ONNX model: {e}")
         import traceback
+        print(f"⚠️  Could not load ONNX model: {e}")
         print(f"   Traceback: {traceback.format_exc()}")
         session = None
         input_details = None
