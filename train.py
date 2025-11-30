@@ -591,6 +591,110 @@ class ModelTrainer:
         
         return model
     
+    def convert_to_onnx(self, model, model_path, input_size=(3, 224, 224)):
+        """Convert PyTorch model to ONNX format"""
+        try:
+            onnx_path = model_path.with_suffix('.onnx')
+            
+            self.logger.info(f"Converting model to ONNX format...")
+            print(f"[INFO] Converting model to ONNX...", flush=True)
+            
+            # Set model to evaluation mode
+            model.eval()
+            
+            # Create dummy input
+            dummy_input = torch.randn(1, *input_size)
+            
+            # Export to ONNX (torch.onnx.export is built into PyTorch)
+            torch.onnx.export(
+                model,
+                dummy_input,
+                str(onnx_path),
+                export_params=True,
+                opset_version=11,
+                do_constant_folding=True,
+                input_names=['input'],
+                output_names=['output'],
+                dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+            )
+            
+            # Validate ONNX model (optional)
+            try:
+                import onnx
+                onnx_model = onnx.load(str(onnx_path))
+                onnx.checker.check_model(onnx_model)
+                self.logger.info(f"[OK] ONNX model validated successfully")
+            except ImportError:
+                # onnx package not available, skip validation
+                pass
+            except Exception as e:
+                self.logger.warning(f"ONNX validation warning: {e}")
+            
+            onnx_size_mb = onnx_path.stat().st_size / (1024 * 1024)
+            self.logger.info(f"[OK] ONNX model saved to: {onnx_path} ({onnx_size_mb:.2f} MB)")
+            print(f"[OK] ONNX model saved: {onnx_path.name} ({onnx_size_mb:.2f} MB)", flush=True)
+            
+            return onnx_path
+            
+        except Exception as e:
+            self.logger.error(f"Failed to convert to ONNX: {e}")
+            print(f"[ERROR] ONNX conversion failed: {e}", flush=True)
+            return None
+    
+    def upload_model_to_server(self, model_path, accuracy, model_type='onnx'):
+        """Upload model file to web server via PHP API"""
+        try:
+            import requests
+            import base64
+            
+            php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+            upload_url = f"{php_api_base}/upload_model.php"
+            
+            if not model_path.exists():
+                self.logger.error(f"Model file not found: {model_path}")
+                return False
+            
+            self.logger.info(f"Uploading model to server...")
+            print(f"[INFO] Uploading model to server...", flush=True)
+            
+            # Read model file and encode to base64
+            with open(model_path, 'rb') as f:
+                model_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            # Prepare upload data
+            upload_data = {
+                'job_id': self.job_id,
+                'accuracy': accuracy,
+                'model_type': model_type,
+                'model_data': model_data
+            }
+            
+            # Upload to server
+            response = requests.post(upload_url, json=upload_data, timeout=300)  # 5 min timeout for large models
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('success'):
+                    model_info = result.get('model', {})
+                    self.logger.info(f"[OK] Model uploaded successfully: {model_info.get('version', 'N/A')}")
+                    self.logger.info(f"  Path: {model_info.get('path', 'N/A')}")
+                    self.logger.info(f"  Size: {model_info.get('size_mb', 0):.2f} MB")
+                    self.logger.info(f"  Accuracy: {accuracy:.2f}%")
+                    print(f"[OK] Model uploaded and activated: {model_info.get('version', 'N/A')}", flush=True)
+                    return True
+                else:
+                    self.logger.error(f"Upload failed: {result.get('error', 'Unknown error')}")
+                    return False
+            else:
+                self.logger.error(f"Upload failed: HTTP {response.status_code} - {response.text}")
+                print(f"[ERROR] Upload failed: HTTP {response.status_code}", flush=True)
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Failed to upload model: {e}")
+            print(f"[ERROR] Model upload error: {e}", flush=True)
+            return False
+    
     def save_model(self, model, accuracy, classes):
         """Save model to database and file system - Auto-activates new model"""
         try:
@@ -599,14 +703,29 @@ class ModelTrainer:
             model_dir = script_dir / "models" / f"job_{self.job_id}"
             model_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save model file
+            # Save PyTorch model file
             model_path = model_dir / "best_model.pth"
             torch.save(model.state_dict(), model_path)
             
             # Get model size
             model_size_mb = model_path.stat().st_size / (1024 * 1024)
             
-            # Save to database (only if pymysql available - on Heroku we skip this)
+            self.logger.info(f"[OK] PyTorch model saved to: {model_path} ({model_size_mb:.2f} MB)")
+            print(f"[OK] Model saved: {model_path.name} ({model_size_mb:.2f} MB)", flush=True)
+            
+            # Convert to ONNX for inference
+            onnx_path = self.convert_to_onnx(model, model_path)
+            
+            # Upload to server (ONNX preferred, fallback to PyTorch)
+            upload_success = False
+            if onnx_path and onnx_path.exists():
+                upload_success = self.upload_model_to_server(onnx_path, accuracy, 'onnx')
+            else:
+                # Fallback: upload PyTorch model
+                self.logger.info("Uploading PyTorch model (ONNX conversion not available)")
+                upload_success = self.upload_model_to_server(model_path, accuracy, 'pth')
+            
+            # Save to database (only if pymysql available - local development)
             if PYMYSQL_AVAILABLE and DB_CONFIG:
                 try:
                     conn = pymysql.connect(**DB_CONFIG)
@@ -620,10 +739,13 @@ class ModelTrainer:
                     # Deactivate all previous models
                     cursor.execute("UPDATE model_versions SET is_active = 0, is_current = 0")
                     
+                    # Use uploaded path if available, otherwise local path
+                    model_db_path = onnx_path.name if onnx_path else model_path.name
+                    
                     # Insert new model as active
                     cursor.execute(
                         "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, 1, NOW())",
-                        (f"v{next_version}", str(model_path), accuracy/100, self.job_id, model_size_mb)
+                        (f"v{next_version}", model_db_path, accuracy/100, self.job_id, model_size_mb)
                     )
                     
                     conn.commit()
@@ -632,15 +754,18 @@ class ModelTrainer:
                     self.logger.info(f"[OK] Model v{next_version} saved and automatically activated with accuracy: {accuracy:.2f}%")
                     self.logger.info(f"[INFO] All previous models have been deactivated")
                 except Exception as e:
-                    self.logger.warning(f"Could not save model to database (using PHP API): {e}")
-                    self.logger.info(f"[OK] Model saved to: {model_path} with accuracy: {accuracy:.2f}%")
+                    self.logger.warning(f"Could not save model to database: {e}")
+            
+            if upload_success:
+                self.logger.info(f"[OK] Model uploaded to server and activated successfully!")
+                print(f"[OK] Model is now active and ready for detection!", flush=True)
             else:
-                # On Heroku - model is saved but not registered in DB (can be done via PHP API later)
-                self.logger.info(f"[OK] Model saved to: {model_path} with accuracy: {accuracy:.2f}%")
-                self.logger.info(f"[INFO] Model registration in database can be done via PHP API if needed")
+                self.logger.warning(f"[WARNING] Model saved locally but upload to server failed")
+                print(f"[WARNING] Model saved but not uploaded - check server connection", flush=True)
             
         except Exception as e:
             self.logger.error(f"Failed to save model: {e}")
+            print(f"[ERROR] Failed to save model: {e}", flush=True)
 
 def update_job_status(job_id, status, error_message=None):
     """Update training job status via PHP API"""
