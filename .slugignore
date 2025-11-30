@@ -38,17 +38,17 @@ build/
 
 # Large model files (will be downloaded during training)
 # BUT: Allow default model from git (models/best 2.onnx)
-# Note: Negation patterns (!) must come AFTER exclusion patterns
+# Note: In .slugignore, allow patterns BEFORE exclude patterns
+# Allow models directory and default model first
+!models/
+!models/best*.onnx
+!models/best 2.onnx
+# Now exclude other model files and subdirectories
 *.pt
 *.pth
 *.onnx
-# Exclude models directory but allow specific default model
 models/job_*/
 models/*/
-# Allow default model BEFORE excluding models/ directory
-!models/best 2.onnx
-!models/
-models/
 runs/
 weights/
 *.h5
