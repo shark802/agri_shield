@@ -6,11 +6,12 @@
 README*
 docs/
 
-# Text files (but NOT requirements.txt, Aptfile, Procfile)
-*.txt
-!requirements.txt
-!Aptfile
-!Procfile
+# Text files - be specific, don't exclude all .txt files
+# Only exclude specific text files, not requirements.txt
+CHANGELOG.txt
+LICENSE.txt
+NOTES.txt
+HISTORY.txt
 
 # Development files
 .git/
