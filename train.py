@@ -667,23 +667,29 @@ class ModelTrainer:
         self.logger.info(f"Uploading model to server... (Size: {model_size_mb:.2f} MB)")
         print(f"[INFO] Uploading model to server... ({model_size_mb:.2f} MB)", flush=True)
         
-        # Read model file and encode to base64
+        # Read model file - use multipart/form-data for better efficiency with large files
         try:
             with open(model_path, 'rb') as f:
                 model_bytes = f.read()
-            model_data = base64.b64encode(model_bytes).decode('utf-8')
-            self.logger.info(f"Model encoded to base64 ({len(model_data)} chars)")
+            # For large files, use multipart/form-data instead of base64 JSON
+            # This is more memory efficient and faster
+            self.logger.info(f"Model file read ({model_size_mb:.2f} MB)")
         except Exception as e:
-            self.logger.error(f"Failed to read/encode model file: {e}")
+            self.logger.error(f"Failed to read model file: {e}")
             return False
         
-        # Prepare upload data
+        # Prepare upload data - use files parameter for multipart upload
+        # This is more efficient than base64 encoding in JSON
         upload_data = {
-            'job_id': self.job_id,
-            'accuracy': accuracy,
+            'job_id': str(self.job_id),
+            'accuracy': str(accuracy),
             'model_type': model_type,
-            'model_data': model_data,
-            'model_size_mb': model_size_mb
+            'model_size_mb': str(model_size_mb)
+        }
+        
+        # Prepare file for multipart upload
+        files = {
+            'model_file': (model_path.name, model_bytes, 'application/octet-stream')
         }
         
         # Create session with retry adapter if available
@@ -708,10 +714,12 @@ class ModelTrainer:
                 self.logger.info(f"Upload attempt {attempt}/{max_attempts}...")
                 print(f"[INFO] Upload attempt {attempt}/{max_attempts}...", flush=True)
                 
+                # Use multipart/form-data for large files (more efficient than JSON base64)
                 # Use longer timeout for large files (10 minutes)
                 response = session.post(
                     upload_url,
-                    json=upload_data,
+                    data=upload_data,
+                    files=files,
                     timeout=600,  # 10 min timeout for large models
                     verify=True,  # Verify SSL certificate
                     stream=False  # Don't stream, send all at once
