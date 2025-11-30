@@ -1495,8 +1495,8 @@ def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
         return None
         
     except ImportError as e:
-        logger.error(f"YOLOv5 not available: {e}")
-        print(f"[ERROR] YOLOv5 not available: {e}", flush=True)
+        logger.error(f"YOLO library not available: {e}")
+        print(f"[ERROR] YOLO library not available: {e}", flush=True)
         raise
     except Exception as e:
         logger.error(f"YOLO training failed: {e}")
