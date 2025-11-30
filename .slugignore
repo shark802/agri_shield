@@ -42,15 +42,17 @@ build/
 *.pt
 *.pth
 *.onnx
-models/
+# Exclude models directory but allow specific default model
 models/job_*/
 models/*/
+# Allow default model BEFORE excluding models/ directory
+!models/best 2.onnx
+!models/
+models/
 runs/
 weights/
 *.h5
 *.pb
-# Allow default model (must come after models/ exclusion)
-!models/best 2.onnx
 
 # Dataset files (downloaded from server)
 training_data/
