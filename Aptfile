@@ -1,4 +1,7 @@
-# Empty Aptfile - satisfies heroku-community/apt buildpack requirement
-# No system packages needed for this deployment
+# System packages for YOLO/Ultralytics on Heroku
+# libgl1-mesa-glx provides libGL.so.1 for headless OpenGL support
+libgl1-mesa-glx
+libglib2.0-0
+
 
 

@@ -1404,6 +1404,12 @@ def create_combined_dataset(logger):
 def train_yolo_model(job_id, epochs, batch_size, data_yaml_path, logger):
     """Train YOLO object detection model using Ultralytics"""
     try:
+        # Set environment variables to disable GUI dependencies (for Heroku)
+        import os
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+        os.environ['DISPLAY'] = ''
+        os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
+        
         from ultralytics import YOLO
         
         logger.info("Starting YOLO object detection training...")

@@ -16,6 +16,11 @@ import threading
 from typing import Dict, Any
 from pathlib import Path
 
+# Set environment variables to disable GUI dependencies (for Heroku)
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+os.environ['DISPLAY'] = ''
+os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
