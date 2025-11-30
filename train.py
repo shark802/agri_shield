@@ -691,6 +691,7 @@ def download_dataset_from_server(script_dir, logger):
         import requests
         import zipfile
         import tempfile
+        import shutil
         
         # Check if dataset already exists locally
         organized_dir = script_dir / "training_data" / "dataset_organized"
@@ -734,19 +735,108 @@ def download_dataset_from_server(script_dir, logger):
         training_data_dir = script_dir / "training_data"
         training_data_dir.mkdir(parents=True, exist_ok=True)
         
+        # Extract to a temp location first to check structure
+        temp_extract_dir = training_data_dir / "temp_extract"
+        temp_extract_dir.mkdir(exist_ok=True)
+        
         with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
-            zip_ref.extractall(training_data_dir)
+            # Get list of files in ZIP
+            zip_files = zip_ref.namelist()
+            
+            # Check if ZIP has a root folder or files are at root
+            has_root_folder = any('/' in f for f in zip_files[:10])  # Check first 10 files
+            
+            if has_root_folder:
+                # Extract to temp location
+                zip_ref.extractall(temp_extract_dir)
+                
+                # Find where data.yaml actually is
+                data_yaml_path = None
+                for root, dirs, files in os.walk(temp_extract_dir):
+                    if 'data.yaml' in files:
+                        data_yaml_path = Path(root) / 'data.yaml'
+                        break
+                
+                if data_yaml_path:
+                    # Get the dataset root (parent of data.yaml)
+                    dataset_root_in_zip = data_yaml_path.parent
+                    
+                    # Move to final location
+                    if organized_dir.exists():
+                        import shutil
+                        shutil.rmtree(organized_dir)
+                    
+                    # Move the entire dataset folder
+                    shutil.move(str(dataset_root_in_zip), str(organized_dir))
+                    print(f"[INFO] Found dataset root: {dataset_root_in_zip.name}", flush=True)
+                else:
+                    # If no data.yaml found, try moving everything from temp
+                    # Check if there's a dataset_organized folder inside
+                    possible_organized = temp_extract_dir / "dataset_organized"
+                    if possible_organized.exists():
+                        if organized_dir.exists():
+                            import shutil
+                            shutil.rmtree(organized_dir)
+                        shutil.move(str(possible_organized), str(organized_dir))
+                    else:
+                        # Move everything from temp to organized_dir
+                        if organized_dir.exists():
+                            import shutil
+                            shutil.rmtree(organized_dir)
+                        organized_dir.mkdir(parents=True)
+                        for item in temp_extract_dir.iterdir():
+                            shutil.move(str(item), str(organized_dir / item.name))
+                
+                # Clean up temp directory
+                if temp_extract_dir.exists():
+                    shutil.rmtree(temp_extract_dir)
+            else:
+                # Files are at root, extract directly to organized_dir
+                if organized_dir.exists():
+                    import shutil
+                    shutil.rmtree(organized_dir)
+                organized_dir.mkdir(parents=True)
+                zip_ref.extractall(organized_dir)
         
         # Clean up temporary ZIP
         os.unlink(tmp_zip_path)
         
-        # Verify extraction
+        # Verify extraction - search for data.yaml
+        data_yaml_found = False
         if (organized_dir / "data.yaml").exists():
+            data_yaml_found = True
+        else:
+            # Search recursively
+            for root, dirs, files in os.walk(organized_dir):
+                if 'data.yaml' in files:
+                    # Found it, but it's in a subdirectory
+                    # Move it to the root if needed
+                    found_path = Path(root) / 'data.yaml'
+                    if found_path.parent != organized_dir:
+                        print(f"[INFO] Found data.yaml in subdirectory: {found_path.parent}", flush=True)
+                        # Check if we should move the whole subdirectory up
+                        if found_path.parent.name == 'dataset_organized':
+                            # Move contents up one level
+                            for item in found_path.parent.iterdir():
+                                dest = organized_dir / item.name
+                                if dest.exists():
+                                    if dest.is_dir():
+                                        shutil.rmtree(dest)
+                                    else:
+                                        dest.unlink()
+                                shutil.move(str(item), str(dest))
+                            shutil.rmtree(found_path.parent)
+                    data_yaml_found = True
+                    break
+        
+        if data_yaml_found and (organized_dir / "data.yaml").exists():
             print(f"[OK] Dataset extracted successfully to {organized_dir}", flush=True)
             logger.info(f"Dataset extracted to {organized_dir}")
             return True
         else:
             print("[ERROR] Dataset extracted but data.yaml not found", flush=True)
+            print(f"[DEBUG] Extracted to: {organized_dir}", flush=True)
+            print(f"[DEBUG] Contents: {list(organized_dir.iterdir()) if organized_dir.exists() else 'Directory does not exist'}", flush=True)
             logger.error("Dataset extracted but data.yaml not found")
             return False
             
