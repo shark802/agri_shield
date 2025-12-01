@@ -692,12 +692,14 @@ class ModelTrainer:
             'model_file': (model_path.name, model_bytes, 'application/octet-stream')
         }
         
-        # Create session with retry adapter if available
+        # Create session WITHOUT automatic retry on 500 errors (we handle manually)
+        # This allows us to see the actual error message
         if RETRY_AVAILABLE:
+            # Only retry on connection errors, not on 500 errors (so we can see the error)
             retry_strategy = Retry(
-                total=3,
-                backoff_factor=2,  # Wait 2, 4, 8 seconds between retries
-                status_forcelist=[429, 500, 502, 503, 504],
+                total=2,  # Only 2 retries for connection issues
+                backoff_factor=1,
+                status_forcelist=[429, 502, 503, 504],  # Don't auto-retry 500, we handle it manually
                 allowed_methods=["POST"]
             )
             session = requests.Session()
@@ -707,7 +709,7 @@ class ModelTrainer:
         else:
             session = requests.Session()
         
-        # Upload with retries and better SSL handling
+        # Upload with retries and better error handling
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
@@ -725,31 +727,65 @@ class ModelTrainer:
                     stream=False  # Don't stream, send all at once
                 )
                 
+                # Log response details for debugging
+                self.logger.info(f"Response status: {response.status_code}")
+                self.logger.info(f"Response headers: {dict(response.headers)}")
+                
                 if response.status_code == 200:
-                    result = response.json()
-                    if result.get('success'):
-                        model_info = result.get('model', {})
-                        self.logger.info(f"[OK] Model uploaded successfully: {model_info.get('version', 'N/A')}")
-                        self.logger.info(f"  Path: {model_info.get('path', 'N/A')}")
-                        self.logger.info(f"  Size: {model_info.get('size_mb', 0):.2f} MB")
-                        self.logger.info(f"  Accuracy: {accuracy:.2f}%")
-                        print(f"[OK] Model uploaded and activated: {model_info.get('version', 'N/A')}", flush=True)
-                        return True
-                    else:
-                        error_msg = result.get('error', 'Unknown error')
-                        self.logger.error(f"Upload failed: {error_msg}")
+                    try:
+                        result = response.json()
+                        if result.get('success'):
+                            model_info = result.get('model', {})
+                            self.logger.info(f"[OK] Model uploaded successfully: {model_info.get('version', 'N/A')}")
+                            self.logger.info(f"  Path: {model_info.get('path', 'N/A')}")
+                            self.logger.info(f"  Size: {model_info.get('size_mb', 0):.2f} MB")
+                            self.logger.info(f"  Accuracy: {accuracy:.2f}%")
+                            print(f"[OK] Model uploaded and activated: {model_info.get('version', 'N/A')}", flush=True)
+                            return True
+                        else:
+                            error_msg = result.get('error', 'Unknown error')
+                            error_details = result.get('mysql_error') or result.get('php_error') or result.get('error')
+                            self.logger.error(f"Upload failed: {error_msg}")
+                            if error_details and error_details != error_msg:
+                                self.logger.error(f"Error details: {error_details}")
+                            print(f"[ERROR] Upload failed: {error_msg}", flush=True)
+                            if attempt < max_attempts:
+                                wait_time = 2 ** attempt
+                                print(f"[WARN] Retrying in {wait_time} seconds...", flush=True)
+                                time.sleep(wait_time)
+                                continue
+                            return False
+                    except ValueError as e:
+                        # Not JSON response
+                        error_text = response.text[:1000] if response.text else "No response body"
+                        self.logger.error(f"Invalid JSON response: {error_text}")
+                        print(f"[ERROR] Server returned invalid JSON: {error_text[:200]}", flush=True)
                         if attempt < max_attempts:
                             wait_time = 2 ** attempt
-                            print(f"[WARN] Retrying in {wait_time} seconds...", flush=True)
                             time.sleep(wait_time)
                             continue
                         return False
                 else:
-                    error_text = response.text[:500] if response.text else "No error message"
-                    self.logger.error(f"Upload failed: HTTP {response.status_code} - {error_text}")
+                    # HTTP error - try to parse JSON error response
+                    error_text = response.text[:2000] if response.text else "No error message"
+                    self.logger.error(f"Upload failed: HTTP {response.status_code}")
+                    self.logger.error(f"Response body: {error_text}")
+                    
+                    # Try to parse as JSON to get detailed error
+                    try:
+                        error_json = response.json()
+                        error_msg = error_json.get('error', 'Unknown error')
+                        error_details = error_json.get('mysql_error') or error_json.get('php_error') or error_json.get('error')
+                        self.logger.error(f"Server error: {error_msg}")
+                        if error_details and error_details != error_msg:
+                            self.logger.error(f"Error details: {error_details}")
+                        print(f"[ERROR] HTTP {response.status_code}: {error_msg}", flush=True)
+                    except:
+                        print(f"[ERROR] HTTP {response.status_code}: {error_text[:200]}", flush=True)
+                    
                     if attempt < max_attempts:
                         wait_time = 2 ** attempt
-                        print(f"[WARN] HTTP {response.status_code}, retrying in {wait_time} seconds...", flush=True)
+                        print(f"[WARN] Retrying in {wait_time} seconds...", flush=True)
                         time.sleep(wait_time)
                         continue
                     return False
@@ -1703,6 +1739,14 @@ def main():
                     logger.info("Final model uploaded successfully!")
                     print(f"[OK] Final model uploaded successfully!", flush=True)
                 else:
+                    # Log model location for manual upload
+                    logger.warning(f"Model upload failed, but model is saved locally at: {onnx_path}")
+                    logger.warning(f"Model size: {onnx_path.stat().st_size / (1024 * 1024):.2f} MB")
+                    logger.warning(f"To manually upload: Copy {onnx_path} to server and register in model_versions table")
+                    print(f"[WARN] Final model upload failed, but model is saved locally", flush=True)
+                    print(f"[INFO] Model location: {onnx_path}", flush=True)
+                    print(f"[INFO] Model size: {onnx_path.stat().st_size / (1024 * 1024):.2f} MB", flush=True)
+                    print(f"[INFO] You can manually upload this file to activate the model", flush=True)
                     logger.warning("Final model upload failed, but model is saved locally")
                     print(f"[WARN] Final model upload failed, but model is saved locally", flush=True)
                 
