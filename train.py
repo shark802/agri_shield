@@ -952,6 +952,16 @@ def download_dataset_from_server(script_dir, logger):
             logger.error(f"Dataset download failed: HTTP {response.status_code}")
             if response.status_code == 404:
                 print("[ERROR] Dataset not found on server. Please upload a dataset first.", flush=True)
+                print("[ERROR] Go to admin training module and upload/organize a dataset.", flush=True)
+            elif response.status_code == 500:
+                print("[ERROR] Server error when downloading dataset. Check server logs.", flush=True)
+            # Try to get error message from response
+            try:
+                error_data = response.json()
+                if 'error' in error_data:
+                    print(f"[ERROR] Server error: {error_data['error']}", flush=True)
+            except:
+                pass
             return False
         
         # Save to temporary file
@@ -961,8 +971,16 @@ def download_dataset_from_server(script_dir, logger):
                 if chunk:
                     tmp_file.write(chunk)
         
-        print(f"[OK] Dataset downloaded ({os.path.getsize(tmp_zip_path) / 1024 / 1024:.1f} MB)", flush=True)
-        logger.info(f"Dataset downloaded: {os.path.getsize(tmp_zip_path) / 1024 / 1024:.1f} MB")
+        zip_size = os.path.getsize(tmp_zip_path)
+        print(f"[OK] Dataset downloaded ({zip_size / 1024 / 1024:.1f} MB)", flush=True)
+        logger.info(f"Dataset downloaded: {zip_size / 1024 / 1024:.1f} MB")
+        
+        # Check if ZIP is too small (likely empty)
+        if zip_size < 1024:  # Less than 1KB is suspicious
+            print(f"[ERROR] Downloaded ZIP file is too small ({zip_size} bytes). Dataset may be empty on server.", flush=True)
+            logger.error(f"Downloaded ZIP file is too small: {zip_size} bytes")
+            os.unlink(tmp_zip_path)
+            return False
         
         # Extract ZIP
         print("[INFO] Extracting dataset...", flush=True)
@@ -974,6 +992,22 @@ def download_dataset_from_server(script_dir, logger):
         # Check ZIP structure first
         with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
             file_list = zip_ref.namelist()
+            
+            # Check if ZIP has files
+            if not file_list:
+                print("[ERROR] ZIP file is empty. Dataset on server has no files.", flush=True)
+                logger.error("ZIP file is empty")
+                os.unlink(tmp_zip_path)
+                return False
+            
+            # Count image files in ZIP
+            image_files = [f for f in file_list if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+            print(f"[INFO] ZIP contains {len(file_list)} total files, {len(image_files)} image files", flush=True)
+            if len(image_files) == 0:
+                print("[ERROR] ZIP file contains no image files. Dataset on server is empty or has wrong structure.", flush=True)
+                logger.error("ZIP file contains no image files")
+                os.unlink(tmp_zip_path)
+                return False
             
             # Check if ZIP has a root folder
             if file_list:
@@ -1087,6 +1121,17 @@ def create_combined_dataset(logger):
         print("[INFO] Dataset not found locally or incomplete, attempting to download from server...", flush=True)
         print(f"[DEBUG] Check: dir exists={organized_dir.exists()}, yaml exists={organized_yaml_check.exists()}, images dir exists={organized_train_images_check.exists()}, image count={image_count}", flush=True)
         logger.info("Dataset not found locally or incomplete, attempting download from server")
+        
+        # Remove existing empty directory if it exists
+        if organized_dir.exists() and image_count == 0:
+            import shutil
+            try:
+                print(f"[INFO] Removing empty/incomplete dataset directory before download...", flush=True)
+                shutil.rmtree(organized_dir)
+                print(f"[OK] Empty dataset directory removed", flush=True)
+            except Exception as e:
+                print(f"[WARN] Could not remove empty dataset directory: {e}", flush=True)
+        
         download_success = download_dataset_from_server(script_dir, logger)
         if not download_success:
             print("[ERROR] Could not download dataset from server!", flush=True)
@@ -1097,6 +1142,11 @@ def create_combined_dataset(logger):
         else:
             print("[OK] Dataset downloaded successfully", flush=True)
             logger.info("Dataset downloaded successfully")
+            
+            # Refresh paths after download
+            organized_dir = script_dir / "training_data" / "dataset_organized"
+            organized_train_images_check = organized_dir / "train" / "images"
+            
             # Verify images exist after download
             if organized_train_images_check.exists():
                 image_count_after = len(list(organized_train_images_check.glob('*.jpg')) + 
@@ -1104,8 +1154,14 @@ def create_combined_dataset(logger):
                                        list(organized_train_images_check.glob('*.png')))
                 print(f"[INFO] Dataset verification: {image_count_after} images found after download", flush=True)
                 if image_count_after == 0:
-                    print("[WARN] Dataset downloaded but no images found! Check dataset structure.", flush=True)
-                    logger.warning("Dataset downloaded but contains no images")
+                    print("[ERROR] Dataset downloaded but no images found! Check dataset structure on server.", flush=True)
+                    print("[ERROR] The dataset ZIP file may be empty or have incorrect structure.", flush=True)
+                    logger.error("Dataset downloaded but contains no images")
+                    raise FileNotFoundError("Dataset downloaded but contains no images. Please check the dataset on the server.")
+            else:
+                print("[ERROR] Dataset downloaded but train/images directory not found!", flush=True)
+                logger.error("Dataset downloaded but train/images directory not found")
+                raise FileNotFoundError("Dataset downloaded but train/images directory not found. Please check the dataset structure on the server.")
     
     # PRIORITY 1: Check for organized dataset from smart import (has data.yaml)
     organized_dir = script_dir / "training_data" / "dataset_organized"
@@ -1377,15 +1433,46 @@ def create_combined_dataset(logger):
             if organized_dir.exists() and organized_yaml.exists():
                 print(f"[INFO] Dataset directory exists but has no images. Attempting to re-download...", flush=True)
                 logger.info("Dataset directory exists but empty, attempting re-download")
+                
+                # Remove empty dataset directory first
+                import shutil
+                try:
+                    if organized_dir.exists():
+                        print(f"[INFO] Removing empty dataset directory: {organized_dir}", flush=True)
+                        shutil.rmtree(organized_dir)
+                        print(f"[OK] Empty dataset directory removed", flush=True)
+                except Exception as e:
+                    print(f"[WARN] Could not remove empty dataset directory: {e}", flush=True)
+                    logger.warning(f"Could not remove empty dataset directory: {e}")
+                
                 download_success = download_dataset_from_server(script_dir, logger)
                 if download_success:
+                    # Refresh paths after download
+                    organized_dir = script_dir / "training_data" / "dataset_organized"
+                    organized_train_images = organized_dir / "train" / "images"
+                    organized_train_labels = organized_dir / "train" / "labels"
+                    organized_val_images = organized_dir / "valid" / "images"
+                    organized_val_labels = organized_dir / "valid" / "labels"
+                    classification_train_dir = organized_dir / "classification" / "train"
+                    classification_val_dir = organized_dir / "classification" / "val"
+                    classification_train_dir.mkdir(parents=True, exist_ok=True)
+                    classification_val_dir.mkdir(parents=True, exist_ok=True)
+                    
                     # Try reorganization again after download
                     train_count = reorganize_from_yolo(organized_train_images, organized_train_labels, classification_train_dir, "train")
                     val_count = reorganize_from_yolo(organized_val_images, organized_val_labels, classification_val_dir, "val")
                     if train_count > 0 or val_count > 0:
                         total_train = train_count + test_count
                         print(f"[OK] Reorganized dataset after re-download: {total_train} train, {val_count} val images", flush=True)
+                        logger.info(f"Reorganized dataset after re-download: {total_train} train, {val_count} val images")
                         return classification_train_dir, classification_val_dir, pest_classes
+                    else:
+                        print(f"[ERROR] Re-download succeeded but still no images found after reorganization", flush=True)
+                        logger.error("Re-download succeeded but still no images found after reorganization")
+                else:
+                    print(f"[ERROR] Re-download failed. Cannot proceed without dataset.", flush=True)
+                    logger.error("Re-download failed. Cannot proceed without dataset.")
+                    raise FileNotFoundError("Dataset download failed. Please upload a dataset to the server first.")
     
     # PRIORITY 2: Fallback to old dataset structure (only if organized dataset doesn't exist or has no images)
     original_train_dir = script_dir / "ml_training" / "datasets" / "processed" / "train"
