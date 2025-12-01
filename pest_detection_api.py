@@ -458,28 +458,17 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
     
     # Handle different output shapes
     if len(output_data.shape) == 3:
-        # Shape could be [batch, classes, spatial] for classification
+        # Shape: [batch, classes, spatial] for classification
         # Or [batch, features, num_detections] for YOLO
         output_data = output_data[0]  # Remove batch dimension
         
         # Check if it's classification format: [classes, spatial_locations]
-        # For classification, we want to find the dominant class across all spatial locations
         if output_data.shape[0] <= 20 and output_data.shape[0] >= len(CLASS_NAMES):
-            # Likely classification: [classes, spatial] - find dominant class
-            print(f"🔍 Classification format detected: shape {output_data.shape} (treating as [classes, spatial])")
+            # Classification: [classes, spatial] - find dominant class
+            print(f"🔍 Classification format: shape {output_data.shape}")
             
-            # Average across spatial dimensions to get class probabilities
-            if len(output_data.shape) == 2:
-                # Shape: [classes, spatial_locations]
-                class_probs = np.mean(output_data, axis=1)  # Average over spatial
-            else:
-                class_probs = np.mean(output_data.flatten().reshape(output_data.shape[0], -1), axis=1)
-            
-            # Get all class probabilities
-            all_probs = {}
-            for i in range(min(len(CLASS_NAMES), len(class_probs))):
-                all_probs[CLASS_NAMES[i]] = float(class_probs[i])
-            print(f"🔍 All class probabilities: {all_probs}")
+            # Average across spatial to get class probabilities
+            class_probs = np.mean(output_data, axis=1) if len(output_data.shape) == 2 else np.mean(output_data.flatten().reshape(output_data.shape[0], -1), axis=1)
             
             # Find dominant class
             max_class_idx = int(np.argmax(class_probs[:len(CLASS_NAMES)]))
@@ -487,31 +476,16 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
             
             print(f"🔍 Dominant class: {CLASS_NAMES[max_class_idx]} (confidence={max_conf:.4f})")
             
-            # Apply classification thresholds
+            # Simple threshold check - no counting, just detection
             min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)
-            second_max_conf = float(np.partition(class_probs[:len(CLASS_NAMES)], -2)[-2]) if len(class_probs) > 1 else 0
-            confidence_gap = max_conf - second_max_conf
             
-            print(f"🔍 Confidence check: max={max_conf:.4f}, second_max={second_max_conf:.4f}, gap={confidence_gap:.4f}, min_threshold={min_conf_threshold:.4f}")
-            
-            # Accept if confidence is high enough and gap is significant
-            if max_conf >= min_conf_threshold and confidence_gap >= CONFIDENCE_GAP_REQUIREMENT and 0 <= max_class_idx < len(CLASS_NAMES):
-                counts[CLASS_NAMES[max_class_idx]] = 1
-                print(f"✅ Detection accepted: {CLASS_NAMES[max_class_idx]} (conf={max_conf:.4f}, gap={confidence_gap:.4f})")
+            if max_conf >= min_conf_threshold and 0 <= max_class_idx < len(CLASS_NAMES):
+                counts[CLASS_NAMES[max_class_idx]] = 1  # Detected (not a count, just presence)
+                print(f"✅ Pest detected: {CLASS_NAMES[max_class_idx]}")
             else:
-                if max_conf < min_conf_threshold:
-                    print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < minimum threshold {min_conf_threshold:.4f}")
-                elif confidence_gap < CONFIDENCE_GAP_REQUIREMENT:
-                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < {CONFIDENCE_GAP_REQUIREMENT}) - likely false positive")
+                print(f"⚠️  No pest detected: confidence {max_conf:.4f} < threshold {min_conf_threshold:.4f}")
             
             return counts
-        else:
-            # Likely YOLO format - handle as before (but shouldn't happen for classification)
-            print(f"⚠️  YOLO-like format detected: {output_data.shape} - this shouldn't happen for classification models")
-            if output_data.shape[0] < output_data.shape[1] and output_data.shape[0] <= 20:
-                detections = output_data.T
-            else:
-                detections = output_data
     elif len(output_data.shape) == 2:
         # Shape: [num_detections, features]
         detections = output_data
@@ -531,25 +505,14 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
             print(f"🔍 All class probabilities: {all_probs}")
             print(f"🔍 Max: class={max_class} ({CLASS_NAMES[max_class] if max_class < len(CLASS_NAMES) else 'unknown'}), confidence={max_conf:.4f}, threshold={conf_threshold}")
             
-            # Higher threshold for classification to reduce false positives
-            # Also check if max confidence is significantly higher than other classes
-            min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)  # At least configured minimum for classification
-            second_max_conf = float(np.partition(class_probs, -2)[-2]) if len(class_probs) > 1 else 0
-            confidence_gap = max_conf - second_max_conf
+            # Simple threshold check - no counting, just detection
+            min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)
             
-            print(f"🔍 Confidence check: max={max_conf:.4f}, second_max={second_max_conf:.4f}, gap={confidence_gap:.4f}, min_threshold={min_conf_threshold:.4f}")
-            
-            # Require: high confidence AND significant gap from other classes (reduces false positives)
-            if max_conf >= min_conf_threshold and confidence_gap >= CONFIDENCE_GAP_REQUIREMENT and 0 <= max_class < len(CLASS_NAMES):
-                counts[CLASS_NAMES[max_class]] = 1  # Classification: only 1 detection
-                print(f"✅ Detection accepted: {CLASS_NAMES[max_class]} (conf={max_conf:.4f}, gap={confidence_gap:.4f})")
+            if max_conf >= min_conf_threshold and 0 <= max_class < len(CLASS_NAMES):
+                counts[CLASS_NAMES[max_class]] = 1  # Detected (not a count, just presence)
+                print(f"✅ Pest detected: {CLASS_NAMES[max_class]}")
             else:
-                if max_conf < min_conf_threshold:
-                    print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < minimum threshold {min_conf_threshold:.4f}")
-                elif confidence_gap < CONFIDENCE_GAP_REQUIREMENT:
-                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < {CONFIDENCE_GAP_REQUIREMENT}) - likely false positive")
-                else:
-                    print(f"⚠️  Detection rejected: class index out of range")
+                print(f"⚠️  No pest detected: confidence {max_conf:.4f} < threshold {min_conf_threshold:.4f}")
         else:
             print(f"⚠️  Class count mismatch: model has {output_data.shape[0]} classes, expected {len(CLASS_NAMES)}")
         return counts
