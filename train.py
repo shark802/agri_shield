@@ -582,10 +582,10 @@ class ModelTrainer:
             self.logger.info(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
             self.logger.info(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
             
-            # Save best model
+            # Save best model (locally only, will upload at end of training)
             if val_acc > self.best_accuracy:
                 self.best_accuracy = val_acc
-                self.save_model(model, val_acc, train_dataset.classes)
+                self.save_model(model, val_acc, train_dataset.classes, upload=False)
                 print(f"  [OK] New best model saved! (Accuracy: {val_acc:.2f}%)", flush=True)
                 sys.stdout.flush()
         
@@ -804,8 +804,8 @@ class ModelTrainer:
         
         return False
     
-    def save_model(self, model, accuracy, classes):
-        """Save model to database and file system - Auto-activates new model"""
+    def save_model(self, model, accuracy, classes, upload=False):
+        """Save model to database and file system - Only uploads if upload=True (at end of training)"""
         try:
             # Create model directory (in parent directory, same as root)
             script_dir = Path(__file__).resolve().parent
@@ -825,14 +825,18 @@ class ModelTrainer:
             # Convert to ONNX for inference
             onnx_path = self.convert_to_onnx(model, model_path)
             
-            # Upload to server (ONNX preferred, fallback to PyTorch)
+            # Only upload if explicitly requested (at end of training)
             upload_success = False
-            if onnx_path and onnx_path.exists():
-                upload_success = self.upload_model_to_server(onnx_path, accuracy, 'onnx')
+            if upload:
+                if onnx_path and onnx_path.exists():
+                    upload_success = self.upload_model_to_server(onnx_path, accuracy, 'onnx')
+                else:
+                    # Fallback: upload PyTorch model
+                    self.logger.info("Uploading PyTorch model (ONNX conversion not available)")
+                    upload_success = self.upload_model_to_server(model_path, accuracy, 'pth')
             else:
-                # Fallback: upload PyTorch model
-                self.logger.info("Uploading PyTorch model (ONNX conversion not available)")
-                upload_success = self.upload_model_to_server(model_path, accuracy, 'pth')
+                self.logger.info("Model saved locally (will upload after all epochs complete)")
+                print(f"[INFO] Model saved locally (upload after training)", flush=True)
             
             # Save to database (only if pymysql available - local development)
             if PYMYSQL_AVAILABLE and DB_CONFIG:
@@ -865,10 +869,10 @@ class ModelTrainer:
                 except Exception as e:
                     self.logger.warning(f"Could not save model to database: {e}")
             
-            if upload_success:
+            if upload and upload_success:
                 self.logger.info(f"[OK] Model uploaded to server and activated successfully!")
                 print(f"[OK] Model is now active and ready for detection!", flush=True)
-            else:
+            elif upload and not upload_success:
                 self.logger.warning(f"[WARNING] Model saved locally but upload to server failed")
                 print(f"[WARNING] Model saved but not uploaded - check server connection", flush=True)
             
@@ -1563,23 +1567,30 @@ def main():
         # Start training
         model = trainer.train(train_dataset, val_dataset)
         
-        # After training completes, ensure final model is uploaded and copied to standard location
+        # After training completes, upload the final best model once
         if trainer.best_accuracy > 0:
             logger.info(f"Training completed! Final best accuracy: {trainer.best_accuracy:.2f}%")
             print(f"[OK] Training completed! Best accuracy: {trainer.best_accuracy:.2f}%", flush=True)
             
-            # The model should already be saved and uploaded during training (when best model found)
-            # But let's verify and upload final model if needed
             script_dir = Path(__file__).resolve().parent
             model_dir = script_dir / "models" / f"job_{args.job_id}"
             onnx_path = model_dir / "best_model.onnx"
             pth_path = model_dir / "best_model.pth"
             
-            # Check if model was already uploaded, if not upload now
+            # Upload the final best model (only once at the end)
             if onnx_path.exists():
-                logger.info("Verifying final model upload...")
-                # Model should already be uploaded, but ensure it's also in standard location
-                # Copy to models/best.onnx for detection API to find it easily
+                logger.info("Uploading final best model to server...")
+                print(f"[INFO] Uploading final best model (accuracy: {trainer.best_accuracy:.2f}%)...", flush=True)
+                upload_success = trainer.upload_model_to_server(onnx_path, trainer.best_accuracy, 'onnx')
+                
+                if upload_success:
+                    logger.info("Final model uploaded successfully!")
+                    print(f"[OK] Final model uploaded successfully!", flush=True)
+                else:
+                    logger.warning("Final model upload failed, but model is saved locally")
+                    print(f"[WARN] Final model upload failed, but model is saved locally", flush=True)
+                
+                # Copy to standard location for detection API
                 standard_model_path = script_dir / "models" / "best.onnx"
                 try:
                     import shutil
@@ -1589,13 +1600,23 @@ def main():
                 except Exception as e:
                     logger.warning(f"Could not copy model to standard location: {e}")
                     print(f"[WARN] Could not copy model to standard location: {e}", flush=True)
-                print(f"[OK] Model ready: {onnx_path.name}", flush=True)
             elif pth_path.exists():
-                # Only PyTorch model exists, try to convert and upload
+                # Only PyTorch model exists, convert to ONNX first, then upload
                 logger.info("Converting final model to ONNX and uploading...")
+                print(f"[INFO] Converting final model to ONNX...", flush=True)
                 onnx_path = trainer.convert_to_onnx(model, pth_path)
                 if onnx_path and onnx_path.exists():
-                    trainer.upload_model_to_server(onnx_path, trainer.best_accuracy, 'onnx')
+                    logger.info("Uploading final best model to server...")
+                    print(f"[INFO] Uploading final best model (accuracy: {trainer.best_accuracy:.2f}%)...", flush=True)
+                    upload_success = trainer.upload_model_to_server(onnx_path, trainer.best_accuracy, 'onnx')
+                    
+                    if upload_success:
+                        logger.info("Final model uploaded successfully!")
+                        print(f"[OK] Final model uploaded successfully!", flush=True)
+                    else:
+                        logger.warning("Final model upload failed, but model is saved locally")
+                        print(f"[WARN] Final model upload failed, but model is saved locally", flush=True)
+                    
                     # Also copy to standard location
                     standard_model_path = script_dir / "models" / "best.onnx"
                     try:
@@ -1605,6 +1626,13 @@ def main():
                         print(f"[OK] Model copied to standard location: best.onnx", flush=True)
                     except Exception as e:
                         logger.warning(f"Could not copy model to standard location: {e}")
+                        print(f"[WARN] Could not copy model to standard location: {e}", flush=True)
+                else:
+                    logger.error("Failed to convert model to ONNX")
+                    print(f"[ERROR] Failed to convert model to ONNX", flush=True)
+            else:
+                logger.error("No model file found after training!")
+                print(f"[ERROR] No model file found after training!", flush=True)
         
         # Update job status to completed
         update_job_status(args.job_id, 'completed')
