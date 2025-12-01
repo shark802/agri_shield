@@ -1070,17 +1070,22 @@ def create_combined_dataset(logger):
     organized_train_images_check = organized_dir / "train" / "images"
     
     # Check if we need to download (missing yaml OR missing images)
+    image_count = 0
+    if organized_train_images_check.exists():
+        image_count = len(list(organized_train_images_check.glob('*.jpg')) + 
+                         list(organized_train_images_check.glob('*.jpeg')) + 
+                         list(organized_train_images_check.glob('*.png')))
+    
     needs_download = (
         not organized_dir.exists() or 
         not organized_yaml_check.exists() or
         not organized_train_images_check.exists() or
-        len(list(organized_train_images_check.glob('*.jpg')) + 
-            list(organized_train_images_check.glob('*.jpeg')) + 
-            list(organized_train_images_check.glob('*.png'))) == 0
+        image_count == 0
     )
     
     if needs_download:
         print("[INFO] Dataset not found locally or incomplete, attempting to download from server...", flush=True)
+        print(f"[DEBUG] Check: dir exists={organized_dir.exists()}, yaml exists={organized_yaml_check.exists()}, images dir exists={organized_train_images_check.exists()}, image count={image_count}", flush=True)
         logger.info("Dataset not found locally or incomplete, attempting download from server")
         download_success = download_dataset_from_server(script_dir, logger)
         if not download_success:
@@ -1092,6 +1097,15 @@ def create_combined_dataset(logger):
         else:
             print("[OK] Dataset downloaded successfully", flush=True)
             logger.info("Dataset downloaded successfully")
+            # Verify images exist after download
+            if organized_train_images_check.exists():
+                image_count_after = len(list(organized_train_images_check.glob('*.jpg')) + 
+                                       list(organized_train_images_check.glob('*.jpeg')) + 
+                                       list(organized_train_images_check.glob('*.png')))
+                print(f"[INFO] Dataset verification: {image_count_after} images found after download", flush=True)
+                if image_count_after == 0:
+                    print("[WARN] Dataset downloaded but no images found! Check dataset structure.", flush=True)
+                    logger.warning("Dataset downloaded but contains no images")
     
     # PRIORITY 1: Check for organized dataset from smart import (has data.yaml)
     organized_dir = script_dir / "training_data" / "dataset_organized"
@@ -1349,12 +1363,29 @@ def create_combined_dataset(logger):
             print(f"[WARN] No images found in organized dataset after reorganization", flush=True)
             print(f"[DEBUG] Train count: {train_count}, Val count: {val_count}, Test count: {test_count}", flush=True)
             if organized_train_images.exists():
-                all_train_imgs = list(organized_train_images.glob('*'))
-                print(f"[DEBUG] Train images dir contains {len(all_train_imgs)} items", flush=True)
+                all_train_imgs = list(organized_train_images.glob('*.jpg')) + list(organized_train_images.glob('*.jpeg')) + list(organized_train_images.glob('*.png'))
+                print(f"[DEBUG] Train images dir contains {len(all_train_imgs)} image files", flush=True)
+                if len(all_train_imgs) == 0:
+                    all_items = list(organized_train_images.glob('*'))
+                    print(f"[DEBUG] Train images dir contains {len(all_items)} total items (may include subdirectories)", flush=True)
             if organized_train_labels.exists():
-                all_train_lbls = list(organized_train_labels.glob('*'))
-                print(f"[DEBUG] Train labels dir contains {len(all_train_lbls)} items", flush=True)
+                all_train_lbls = list(organized_train_labels.glob('*.txt'))
+                print(f"[DEBUG] Train labels dir contains {len(all_train_lbls)} label files", flush=True)
             logger.warning("No images found in organized dataset, falling back")
+            
+            # If dataset exists but has no images, try to download again
+            if organized_dir.exists() and organized_yaml.exists():
+                print(f"[INFO] Dataset directory exists but has no images. Attempting to re-download...", flush=True)
+                logger.info("Dataset directory exists but empty, attempting re-download")
+                download_success = download_dataset_from_server(script_dir, logger)
+                if download_success:
+                    # Try reorganization again after download
+                    train_count = reorganize_from_yolo(organized_train_images, organized_train_labels, classification_train_dir, "train")
+                    val_count = reorganize_from_yolo(organized_val_images, organized_val_labels, classification_val_dir, "val")
+                    if train_count > 0 or val_count > 0:
+                        total_train = train_count + test_count
+                        print(f"[OK] Reorganized dataset after re-download: {total_train} train, {val_count} val images", flush=True)
+                        return classification_train_dir, classification_val_dir, pest_classes
     
     # PRIORITY 2: Fallback to old dataset structure (only if organized dataset doesn't exist or has no images)
     original_train_dir = script_dir / "ml_training" / "datasets" / "processed" / "train"
