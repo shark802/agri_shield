@@ -1124,7 +1124,6 @@ def create_combined_dataset(logger):
         
         # Remove existing empty directory if it exists
         if organized_dir.exists() and image_count == 0:
-            import shutil
             try:
                 print(f"[INFO] Removing empty/incomplete dataset directory before download...", flush=True)
                 shutil.rmtree(organized_dir)
@@ -1435,7 +1434,6 @@ def create_combined_dataset(logger):
                 logger.info("Dataset directory exists but empty, attempting re-download")
                 
                 # Remove empty dataset directory first
-                import shutil
                 try:
                     if organized_dir.exists():
                         print(f"[INFO] Removing empty dataset directory: {organized_dir}", flush=True)
@@ -1711,7 +1709,6 @@ def main():
                 # Copy to standard location for detection API
                 standard_model_path = script_dir / "models" / "best.onnx"
                 try:
-                    import shutil
                     shutil.copy2(onnx_path, standard_model_path)
                     logger.info(f"Copied model to standard location: {standard_model_path}")
                     print(f"[OK] Model copied to standard location: best.onnx", flush=True)
@@ -1738,7 +1735,6 @@ def main():
                     # Also copy to standard location
                     standard_model_path = script_dir / "models" / "best.onnx"
                     try:
-                        import shutil
                         shutil.copy2(onnx_path, standard_model_path)
                         logger.info(f"Copied model to standard location: {standard_model_path}")
                         print(f"[OK] Model copied to standard location: best.onnx", flush=True)
