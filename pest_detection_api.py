@@ -518,6 +518,123 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
     
     # Process detections (YOLO format: [x, y, w, h, conf, class_id, ...] or [x1, y1, x2, y2, conf, class_id, ...])
     print(f"🔍 Processing {len(detections)} detections (YOLO format)")
+    
+    # Collect all valid detections with bounding boxes for NMS
+    valid_detections = []
+    for i, detection in enumerate(detections):
+        if len(detection) < 6:
+            continue
+        
+        conf = None
+        class_id = None
+        bbox = None
+        
+        # Extract bbox and confidence
+        if len(detection) >= 6:
+            # Format: [x, y, w, h, conf, class_id]
+            x, y, w, h = float(detection[0]), float(detection[1]), float(detection[2]), float(detection[3])
+            conf = float(detection[4])
+            class_id = int(detection[5])
+            # Convert center format to corner format for NMS: [x1, y1, x2, y2]
+            bbox = [x - w/2, y - h/2, x + w/2, y + h/2]
+        elif len(detection) >= 5:
+            objectness = float(detection[4])
+            if len(detection) > 5:
+                class_probs = np.array(detection[5:])
+                max_class_idx = int(np.argmax(class_probs))
+                max_class_prob = float(class_probs[max_class_idx])
+                conf = objectness * max_class_prob
+                class_id = max_class_idx
+                x, y, w, h = float(detection[0]), float(detection[1]), float(detection[2]), float(detection[3])
+                bbox = [x - w/2, y - h/2, x + w/2, y + h/2]
+            else:
+                continue
+        
+        if conf is not None and class_id is not None and bbox is not None:
+            yolo_threshold = max(conf_threshold, YOLO_CONF_THRESHOLD)
+            if conf >= yolo_threshold and 0 <= class_id < len(CLASS_NAMES):
+                valid_detections.append({
+                    'bbox': bbox,
+                    'conf': conf,
+                    'class_id': class_id
+                })
+    
+    # Apply Non-Maximum Suppression (NMS) to remove duplicate detections
+    if len(valid_detections) > 0:
+        print(f"🔍 Found {len(valid_detections)} valid detections before NMS")
+        
+        # Group by class and apply NMS per class
+        nms_detections = []
+        for class_id in range(len(CLASS_NAMES)):
+            class_dets = [d for d in valid_detections if d['class_id'] == class_id]
+            if len(class_dets) == 0:
+                continue
+            
+            # Sort by confidence (highest first)
+            class_dets.sort(key=lambda x: x['conf'], reverse=True)
+            
+            # Simple NMS: keep highest confidence, remove overlapping boxes
+            kept = []
+            for det in class_dets:
+                overlap = False
+                for kept_det in kept:
+                    # Calculate IoU (Intersection over Union)
+                    iou = calculate_iou(det['bbox'], kept_det['bbox'])
+                    if iou > 0.5:  # 50% overlap threshold
+                        overlap = True
+                        break
+                if not overlap:
+                    kept.append(det)
+            
+            nms_detections.extend(kept)
+            if len(class_dets) > len(kept):
+                print(f"🔍 NMS: {len(class_dets)} -> {len(kept)} detections for {CLASS_NAMES[class_id]}")
+        
+        valid_detections = nms_detections
+        print(f"🔍 After NMS: {len(valid_detections)} unique detections")
+    
+    # Count detections after NMS
+    detection_count = 0
+    for det in valid_detections:
+        counts[CLASS_NAMES[det['class_id']]] += 1
+        detection_count += 1
+        if detection_count <= 3:
+            print(f"✅ Accepted: {CLASS_NAMES[det['class_id']]} (conf={det['conf']:.4f})")
+    
+    print(f"🔍 Total detections accepted: {detection_count}")
+    
+    return counts
+
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union (IoU) of two bounding boxes"""
+    # Box format: [x1, y1, x2, y2]
+    x1_min, y1_min, x1_max, y1_max = box1
+    x2_min, y2_min, x2_max, y2_max = box2
+    
+    # Calculate intersection
+    inter_x_min = max(x1_min, x2_min)
+    inter_y_min = max(y1_min, y2_min)
+    inter_x_max = min(x1_max, x2_max)
+    inter_y_max = min(y1_max, y2_max)
+    
+    if inter_x_max < inter_x_min or inter_y_max < inter_y_min:
+        return 0.0
+    
+    inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+    
+    # Calculate union
+    box1_area = (x1_max - x1_min) * (y1_max - y1_min)
+    box2_area = (x2_max - x2_min) * (y2_max - y2_min)
+    union_area = box1_area + box2_area - inter_area
+    
+    if union_area == 0:
+        return 0.0
+    
+    return inter_area / union_area
+
+# Old code removed - keeping for reference but replaced above
+def _old_detection_processing():
+    """Old detection processing code - replaced by NMS version"""
     detection_count = 0
     for i, detection in enumerate(detections):
         if len(detection) < 6:
