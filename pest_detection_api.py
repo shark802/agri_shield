@@ -521,6 +521,8 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
     
     # Collect all valid detections with bounding boxes for NMS
     valid_detections = []
+    all_detections_by_class = {i: [] for i in range(len(CLASS_NAMES))}  # Track all detections per class for debugging
+    
     for i, detection in enumerate(detections):
         if len(detection) < 6:
             continue
@@ -551,6 +553,10 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
                 continue
         
         if conf is not None and class_id is not None and bbox is not None:
+            # Track all detections for debugging
+            if 0 <= class_id < len(CLASS_NAMES):
+                all_detections_by_class[class_id].append(conf)
+            
             yolo_threshold = max(conf_threshold, YOLO_CONF_THRESHOLD)
             if conf >= yolo_threshold and 0 <= class_id < len(CLASS_NAMES):
                 valid_detections.append({
@@ -558,6 +564,18 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
                     'conf': conf,
                     'class_id': class_id
                 })
+            elif 0 <= class_id < len(CLASS_NAMES) and i < 10:  # Log first 10 rejected per class
+                print(f"⚠️  Rejected {CLASS_NAMES[class_id]}: conf={conf:.4f} < threshold {yolo_threshold:.4f}")
+    
+    # Debug: Show detection statistics per class
+    print(f"🔍 Detection statistics per class:")
+    for class_id in range(len(CLASS_NAMES)):
+        all_confs = all_detections_by_class[class_id]
+        if len(all_confs) > 0:
+            max_conf = max(all_confs)
+            avg_conf = sum(all_confs) / len(all_confs)
+            above_threshold = sum(1 for c in all_confs if c >= max(conf_threshold, YOLO_CONF_THRESHOLD))
+            print(f"   {CLASS_NAMES[class_id]}: {len(all_confs)} total, max={max_conf:.4f}, avg={avg_conf:.4f}, above_threshold={above_threshold}")
     
     # Apply Non-Maximum Suppression (NMS) to remove duplicate detections
     if len(valid_detections) > 0:
