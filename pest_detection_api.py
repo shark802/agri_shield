@@ -795,21 +795,49 @@ def detect() -> Any:
     recommendations = {k: v for k, v in pesticide_recs.items() if counts.get(k, 0) > 0}
     
     # Verification System: Determine if detected pests are known/verified
+    # Normalize pest names for comparison (case-insensitive, handle variations)
+    def normalize_pest_name(name):
+        """Normalize pest name for comparison"""
+        if not name:
+            return ""
+        # Convert to lowercase, replace spaces/hyphens/underscores with single underscore
+        normalized = name.lower().strip()
+        normalized = normalized.replace('-', '_').replace(' ', '_')
+        # Remove multiple underscores
+        while '__' in normalized:
+            normalized = normalized.replace('__', '_')
+        return normalized.strip('_')
+    
+    # Create normalized mapping of known classes
+    normalized_class_names = {normalize_pest_name(name): name for name in CLASS_NAMES}
+    
+    # Debug: Log known classes for troubleshooting
+    print(f"🔍 Verification: Known classes (normalized): {list(normalized_class_names.keys())}")
+    print(f"🔍 Verification: Detected pests: {list(counts.keys())}")
+    
     verified_pests = {}
     unverified_detections = []
     
     # Check each detected pest
     for pest_name, count in counts.items():
         if count > 0:
-            # If pest is in CLASS_NAMES, it's a known/verified pest
-            if pest_name in CLASS_NAMES:
-                verified_pests[pest_name] = count
+            # Normalize the detected pest name
+            normalized_detected = normalize_pest_name(pest_name)
+            
+            # Check if normalized name matches any known class
+            if normalized_detected in normalized_class_names:
+                # Use the original CLASS_NAMES version for consistency
+                original_name = normalized_class_names[normalized_detected]
+                verified_pests[original_name] = count
+                print(f"✅ Verified: '{pest_name}' -> '{original_name}' (normalized: '{normalized_detected}')")
             else:
                 # Unknown pest detected
+                print(f"⚠️  Unverified: '{pest_name}' (normalized: '{normalized_detected}') not in known classes")
                 unverified_detections.append({
                     "pest_name": pest_name,
                     "count": count,
-                    "reason": "not_in_training_data"
+                    "reason": "not_in_training_data",
+                    "normalized_name": normalized_detected  # For debugging
                 })
     
     # Determine overall verification status
