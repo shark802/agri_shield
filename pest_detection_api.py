@@ -794,13 +794,50 @@ def detect() -> Any:
     
     recommendations = {k: v for k, v in pesticide_recs.items() if counts.get(k, 0) > 0}
     
+    # Verification System: Determine if detected pests are known/verified
+    verified_pests = {}
+    unverified_detections = []
+    
+    # Check each detected pest
+    for pest_name, count in counts.items():
+        if count > 0:
+            # If pest is in CLASS_NAMES, it's a known/verified pest
+            if pest_name in CLASS_NAMES:
+                verified_pests[pest_name] = count
+            else:
+                # Unknown pest detected
+                unverified_detections.append({
+                    "pest_name": pest_name,
+                    "count": count,
+                    "reason": "not_in_training_data"
+                })
+    
+    # Determine overall verification status
+    has_verified = len(verified_pests) > 0
+    has_unverified = len(unverified_detections) > 0
+    
+    if has_verified and not has_unverified:
+        verification_status = "verified"  # All detections are known pests
+    elif has_unverified and not has_verified:
+        verification_status = "unverified"  # Only unknown detections
+    elif has_verified and has_unverified:
+        verification_status = "mixed"  # Both known and unknown
+    else:
+        verification_status = "no_detection"  # No pests detected
+    
     return jsonify({
         "status": "success",
         "pest_counts": counts,
+        "verified_pests": verified_pests,
+        "unverified_detections": unverified_detections,
+        "verification_status": verification_status,
+        "is_known_pest": has_verified,  # True if at least one known pest detected
+        "requires_manual_review": has_unverified,  # True if unknown pests detected
         "recommendations": recommendations,
         "inference_time_ms": round(dt * 1000, 1),
         "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none",
-        "framework": "ONNX Runtime"
+        "framework": "ONNX Runtime",
+        "known_classes": CLASS_NAMES  # List of all known pest classes
     })
 
 # ============================================================================
