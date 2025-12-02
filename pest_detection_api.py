@@ -851,7 +851,15 @@ def detect() -> Any:
     elif has_verified and has_unverified:
         verification_status = "mixed"  # Both known and unknown
     else:
-        verification_status = "no_detection"  # No pests detected
+        # No pests detected - treat as unverified (needs review)
+        verification_status = "unverified"  # No pests detected - needs manual review
+        # Add a special unverified detection entry
+        unverified_detections.append({
+            "pest_name": "No Pest Detected",
+            "count": 0,
+            "reason": "no_detection",
+            "detected_as": "No Pest Detected"
+        })
     
     return jsonify({
         "status": "success",
