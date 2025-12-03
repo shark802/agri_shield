@@ -1136,64 +1136,41 @@ def create_combined_dataset(logger):
     
     # PRIORITY 0: Download dataset from server if not available locally (for Heroku)
     organized_dir = script_dir / "training_data" / "dataset_organized"
-    organized_yaml_check = organized_dir / "data.yaml"
     
-    # Check for both YOLO format (train/images) and classification format (classification/train/{class})
+    # CRITICAL FIX: ALWAYS remove existing dataset directory FIRST to ensure fresh dataset
+    # This prevents using stale/cached datasets from previous training runs
+    # The old dataset might have wrong image counts (e.g., 326 instead of 1106)
+    if organized_dir.exists():
+        try:
+            print(f"[INFO] Removing existing dataset directory to ensure fresh download...", flush=True)
+            print(f"[INFO] This prevents using stale datasets from previous training runs", flush=True)
+            shutil.rmtree(organized_dir)
+            print(f"[OK] Existing dataset directory removed", flush=True)
+            logger.info("Removed existing dataset directory to ensure fresh download")
+        except Exception as e:
+            print(f"[WARN] Could not remove existing dataset directory: {e}", flush=True)
+            logger.warning(f"Could not remove existing dataset directory: {e}")
+            # Try to at least remove classification directory
+            classification_old = organized_dir / "classification"
+            if classification_old.exists():
+                try:
+                    shutil.rmtree(classification_old)
+                    print(f"[OK] Removed old classification directory", flush=True)
+                except:
+                    pass
+    
+    # Now check if we need to download (will always be True after removal)
+    organized_yaml_check = organized_dir / "data.yaml"
     organized_train_images_check = organized_dir / "train" / "images"  # YOLO format
     classification_train_check = organized_dir / "classification" / "train"  # Classification format
     
-    # Check if we need to download (missing yaml OR missing images in either format)
-    image_count = 0
-    has_yolo_format = False
-    has_classification_format = False
-    
-    # Check YOLO format
-    if organized_train_images_check.exists():
-        image_count = len(list(organized_train_images_check.glob('*.jpg')) + 
-                         list(organized_train_images_check.glob('*.jpeg')) + 
-                         list(organized_train_images_check.glob('*.png')))
-        if image_count > 0:
-            has_yolo_format = True
-    
-    # Check classification format (from database export)
-    if classification_train_check.exists():
-        for class_dir in classification_train_check.iterdir():
-            if class_dir.is_dir():
-                image_count += len(list(class_dir.glob('*.jpg')) + 
-                                 list(class_dir.glob('*.jpeg')) + 
-                                 list(class_dir.glob('*.png')))
-        if image_count > 0:
-            has_classification_format = True
-    
-    needs_download = (
-        not organized_dir.exists() or 
-        not organized_yaml_check.exists() or
-        (not has_yolo_format and not has_classification_format) or
-        image_count == 0
-    )
+    # After removal, dataset won't exist, so we always need to download
+    needs_download = True
     
     if needs_download:
-        print("[INFO] Dataset not found locally or incomplete, attempting to download from server...", flush=True)
-        print(f"[DEBUG] Check: dir exists={organized_dir.exists()}, yaml exists={organized_yaml_check.exists()}, images dir exists={organized_train_images_check.exists()}, image count={image_count}", flush=True)
-        logger.info("Dataset not found locally or incomplete, attempting download from server")
-        
-        # ALWAYS remove existing dataset directory before download to ensure fresh dataset
-        # This prevents using stale/cached datasets that might have wrong image counts
-        if organized_dir.exists():
-            try:
-                print(f"[INFO] Removing existing dataset directory before download to ensure fresh dataset...", flush=True)
-                shutil.rmtree(organized_dir)
-                print(f"[OK] Existing dataset directory removed", flush=True)
-            except Exception as e:
-                print(f"[WARN] Could not remove existing dataset directory: {e}", flush=True)
-                # Try to at least remove classification directory
-                classification_old = organized_dir / "classification"
-                if classification_old.exists():
-                    try:
-                        shutil.rmtree(classification_old)
-                        print(f"[OK] Removed old classification directory", flush=True)
-                    except:
-                        pass
+        print("[INFO] Downloading fresh dataset from server...", flush=True)
+        print(f"[INFO] This ensures training uses the latest images from database", flush=True)
+        logger.info("Downloading fresh dataset from server")
         
         download_success = download_dataset_from_server(script_dir, logger)
         if not download_success:
