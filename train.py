@@ -1214,6 +1214,37 @@ def create_combined_dataset(logger):
             print(f"Warning: data.yaml exists but could not parse classes", flush=True)
             logger.warning("data.yaml exists but could not parse classes")
     
+    # PRIORITY 0.5: Check if classification format already exists (from database export)
+    # This is the format created by export_dataset_function.php
+    classification_train_dir = organized_dir / "classification" / "train"
+    classification_val_dir = organized_dir / "classification" / "val"
+    
+    if classification_train_dir.exists() and classification_val_dir.exists():
+        # Check if it has images
+        train_images_count = 0
+        val_images_count = 0
+        for class_dir in classification_train_dir.iterdir():
+            if class_dir.is_dir():
+                train_images_count += len(list(class_dir.glob('*.jpg')) + list(class_dir.glob('*.jpeg')) + list(class_dir.glob('*.png')))
+        for class_dir in classification_val_dir.iterdir():
+            if class_dir.is_dir():
+                val_images_count += len(list(class_dir.glob('*.jpg')) + list(class_dir.glob('*.jpeg')) + list(class_dir.glob('*.png')))
+        
+        if train_images_count > 0 or val_images_count > 0:
+            print(f"[OK] Found classification format dataset (from database export)", flush=True)
+            print(f"  Train images: {train_images_count}, Val images: {val_images_count}", flush=True)
+            logger.info(f"Using existing classification format dataset: {train_images_count} train, {val_images_count} val")
+            if pest_classes:
+                print(f"  Using classes from data.yaml: {pest_classes}", flush=True)
+                return classification_train_dir, classification_val_dir, pest_classes
+            else:
+                # Extract classes from directory structure
+                detected_classes = sorted([d.name for d in classification_train_dir.iterdir() if d.is_dir()])
+                if detected_classes:
+                    print(f"  Detected classes from directory: {detected_classes}", flush=True)
+                    logger.info(f"Detected classes from directory: {detected_classes}")
+                    return classification_train_dir, classification_val_dir, detected_classes
+    
     # Check if organized dataset exists (from smart import)
     organized_train_images = organized_dir / "train" / "images"
     organized_train_labels = organized_dir / "train" / "labels"
