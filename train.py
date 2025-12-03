@@ -1137,11 +1137,35 @@ def create_combined_dataset(logger):
     # PRIORITY 0: Download dataset from server if not available locally (for Heroku)
     organized_dir = script_dir / "training_data" / "dataset_organized"
     organized_yaml_check = organized_dir / "data.yaml"
+    
+    # Check for classification format (what export_dataset_function.php creates)
+    classification_train_check = organized_dir / "classification" / "train"
+    classification_val_check = organized_dir / "classification" / "val"
+    
+    # Also check for YOLO format (legacy)
     organized_train_images_check = organized_dir / "train" / "images"
     
-    # Check if we need to download (missing yaml OR missing images)
+    # Check if we need to download (missing yaml OR missing images in either format)
     image_count = 0
-    if organized_train_images_check.exists():
+    has_classification_format = False
+    
+    # Check classification format first (preferred)
+    if classification_train_check.exists() and classification_val_check.exists():
+        for class_dir in classification_train_check.iterdir():
+            if class_dir.is_dir():
+                image_count += len(list(class_dir.glob('*.jpg')) + 
+                                  list(class_dir.glob('*.jpeg')) + 
+                                  list(class_dir.glob('*.png')))
+        for class_dir in classification_val_check.iterdir():
+            if class_dir.is_dir():
+                image_count += len(list(class_dir.glob('*.jpg')) + 
+                                  list(class_dir.glob('*.jpeg')) + 
+                                  list(class_dir.glob('*.png')))
+        if image_count > 0:
+            has_classification_format = True
+    
+    # Fallback: Check YOLO format if classification format not found
+    if image_count == 0 and organized_train_images_check.exists():
         image_count = len(list(organized_train_images_check.glob('*.jpg')) + 
                          list(organized_train_images_check.glob('*.jpeg')) + 
                          list(organized_train_images_check.glob('*.png')))
@@ -1149,7 +1173,7 @@ def create_combined_dataset(logger):
     needs_download = (
         not organized_dir.exists() or 
         not organized_yaml_check.exists() or
-        not organized_train_images_check.exists() or
+        (not has_classification_format and not organized_train_images_check.exists()) or
         image_count == 0
     )
     
@@ -1180,23 +1204,57 @@ def create_combined_dataset(logger):
             
             # Refresh paths after download
             organized_dir = script_dir / "training_data" / "dataset_organized"
+            
+            # Check for classification format (what export_dataset_function.php creates)
+            classification_train_dir = organized_dir / "classification" / "train"
+            classification_val_dir = organized_dir / "classification" / "val"
+            
+            # Also check for YOLO format (legacy)
             organized_train_images_check = organized_dir / "train" / "images"
             
-            # Verify images exist after download
-            if organized_train_images_check.exists():
+            # Verify images exist after download - check classification format first
+            if classification_train_dir.exists() and classification_val_dir.exists():
+                train_images_count = 0
+                val_images_count = 0
+                for class_dir in classification_train_dir.iterdir():
+                    if class_dir.is_dir():
+                        train_images_count += len(list(class_dir.glob('*.jpg')) + 
+                                                 list(class_dir.glob('*.jpeg')) + 
+                                                 list(class_dir.glob('*.png')))
+                for class_dir in classification_val_dir.iterdir():
+                    if class_dir.is_dir():
+                        val_images_count += len(list(class_dir.glob('*.jpg')) + 
+                                               list(class_dir.glob('*.jpeg')) + 
+                                               list(class_dir.glob('*.png')))
+                
+                total_images = train_images_count + val_images_count
+                print(f"[INFO] Dataset verification (classification format): {total_images} images found ({train_images_count} train, {val_images_count} val)", flush=True)
+                if total_images > 0:
+                    print(f"[OK] Classification format dataset verified successfully", flush=True)
+                    logger.info(f"Classification format dataset verified: {train_images_count} train, {val_images_count} val")
+                else:
+                    print("[ERROR] Dataset downloaded but no images found in classification format! Check dataset structure on server.", flush=True)
+                    logger.error("Dataset downloaded but contains no images in classification format")
+                    raise FileNotFoundError("Dataset downloaded but contains no images. Please check the dataset on the server.")
+            elif organized_train_images_check.exists():
+                # Fallback: Check YOLO format (legacy)
                 image_count_after = len(list(organized_train_images_check.glob('*.jpg')) + 
                                        list(organized_train_images_check.glob('*.jpeg')) + 
                                        list(organized_train_images_check.glob('*.png')))
-                print(f"[INFO] Dataset verification: {image_count_after} images found after download", flush=True)
+                print(f"[INFO] Dataset verification (YOLO format): {image_count_after} images found after download", flush=True)
                 if image_count_after == 0:
                     print("[ERROR] Dataset downloaded but no images found! Check dataset structure on server.", flush=True)
                     print("[ERROR] The dataset ZIP file may be empty or have incorrect structure.", flush=True)
                     logger.error("Dataset downloaded but contains no images")
                     raise FileNotFoundError("Dataset downloaded but contains no images. Please check the dataset on the server.")
             else:
-                print("[ERROR] Dataset downloaded but train/images directory not found!", flush=True)
-                logger.error("Dataset downloaded but train/images directory not found")
-                raise FileNotFoundError("Dataset downloaded but train/images directory not found. Please check the dataset structure on the server.")
+                print("[ERROR] Dataset downloaded but neither classification/train nor train/images directory found!", flush=True)
+                print(f"[DEBUG] Checked paths:", flush=True)
+                print(f"  Classification train: {classification_train_dir} (exists: {classification_train_dir.exists()})", flush=True)
+                print(f"  Classification val: {classification_val_dir} (exists: {classification_val_dir.exists()})", flush=True)
+                print(f"  YOLO train/images: {organized_train_images_check} (exists: {organized_train_images_check.exists()})", flush=True)
+                logger.error("Dataset downloaded but neither classification/train nor train/images directory found")
+                raise FileNotFoundError("Dataset downloaded but train/images or classification/train directory not found. Please check the dataset structure on the server.")
     
     # PRIORITY 1: Check for organized dataset from smart import (has data.yaml)
     organized_dir = script_dir / "training_data" / "dataset_organized"
@@ -1219,6 +1277,7 @@ def create_combined_dataset(logger):
     classification_train_dir = organized_dir / "classification" / "train"
     classification_val_dir = organized_dir / "classification" / "val"
     
+    # Check if classification format exists (this is what export_dataset_function.php creates)
     if classification_train_dir.exists() and classification_val_dir.exists():
         # Check if it has images
         train_images_count = 0
@@ -1244,6 +1303,9 @@ def create_combined_dataset(logger):
                     print(f"  Detected classes from directory: {detected_classes}", flush=True)
                     logger.info(f"Detected classes from directory: {detected_classes}")
                     return classification_train_dir, classification_val_dir, detected_classes
+        else:
+            print(f"[WARN] Classification directories exist but contain no images", flush=True)
+            logger.warning("Classification directories exist but contain no images")
     
     # Check if organized dataset exists (from smart import)
     organized_train_images = organized_dir / "train" / "images"
