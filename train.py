@@ -1051,12 +1051,30 @@ def download_dataset_from_server(script_dir, logger):
                 os.unlink(tmp_zip_path)
                 return False
             
+            # Show sample of ZIP structure for debugging
+            print(f"[DEBUG] Sample ZIP paths (first 10):", flush=True)
+            for path in file_list[:10]:
+                print(f"  {path}", flush=True)
+            if len(file_list) > 10:
+                print(f"  ... and {len(file_list) - 10} more files", flush=True)
+            
             # Check if ZIP has a root folder
             if file_list:
                 first_path = file_list[0]
                 if '/' in first_path:
                     root_folder = first_path.split('/')[0]
                     print(f"[INFO] ZIP contains root folder: {root_folder}", flush=True)
+                    
+                    # Check what structure is inside
+                    unique_roots = set()
+                    for path in file_list:
+                        if '/' in path:
+                            root = path.split('/')[0]
+                            unique_roots.add(root)
+                    if len(unique_roots) > 1:
+                        print(f"[INFO] ZIP contains multiple root folders: {sorted(unique_roots)}", flush=True)
+                    else:
+                        print(f"[INFO] ZIP root structure: {root_folder}/", flush=True)
                     
                     # If ZIP has 'dataset_organized' as root, extract to parent and let it create the folder
                     if root_folder == 'dataset_organized' or 'dataset' in root_folder.lower():
@@ -1131,16 +1149,61 @@ def download_dataset_from_server(script_dir, logger):
         else:
             print("[ERROR] Dataset extracted but no valid structure found", flush=True)
             print(f"[DEBUG] Checked in: {organized_dir}", flush=True)
+            print(f"[DEBUG] organized_dir exists: {organized_dir.exists()}", flush=True)
             print(f"[DEBUG] Checked for:", flush=True)
-            print(f"  classification/train: {'✓' if has_classification else '✗'}", flush=True)
-            print(f"  100.v1i.folder/train: {'✓' if has_roboflow else '✗'}", flush=True)
-            print(f"  train/images: {'✓' if has_yolo else '✗'}", flush=True)
+            print(f"  classification/train: {'✓' if has_classification else '✗'} ({organized_dir / 'classification' / 'train'})", flush=True)
+            print(f"  100.v1i.folder/train: {'✓' if has_roboflow else '✗'} ({organized_dir / '100.v1i.folder' / 'train'})", flush=True)
+            print(f"  train/images: {'✓' if has_yolo else '✗'} ({organized_dir / 'train' / 'images'})", flush=True)
             print(f"  data.yaml: {'✓' if has_data_yaml else '✗'} (optional)", flush=True)
-            # List what was actually extracted
-            if organized_dir.exists():
-                print(f"[DEBUG] Contents of {organized_dir}:", flush=True)
-                for item in organized_dir.iterdir():
-                    print(f"  - {item.name} ({'dir' if item.is_dir() else 'file'})", flush=True)
+            
+            # List what was actually extracted - check multiple locations
+            locations_to_check = [
+                organized_dir,
+                script_dir / "training_data" / "dataset_organized",
+                script_dir / "training_data",
+            ]
+            
+            for check_dir in locations_to_check:
+                if check_dir.exists():
+                    print(f"[DEBUG] Contents of {check_dir}:", flush=True)
+                    try:
+                        items = list(check_dir.iterdir())
+                        if items:
+                            for item in items[:20]:  # Limit to first 20 items
+                                item_type = 'dir' if item.is_dir() else 'file'
+                                size_info = ""
+                                if item.is_file():
+                                    try:
+                                        size_info = f" ({item.stat().st_size} bytes)"
+                                    except:
+                                        pass
+                                print(f"  - {item.name} ({item_type}){size_info}", flush=True)
+                            if len(items) > 20:
+                                print(f"  ... and {len(items) - 20} more items", flush=True)
+                        else:
+                            print(f"  (empty directory)", flush=True)
+                    except Exception as e:
+                        print(f"  (error listing: {e})", flush=True)
+                    
+                    # Also check for nested dataset_organized
+                    if check_dir.name != "dataset_organized":
+                        nested = check_dir / "dataset_organized"
+                        if nested.exists():
+                            print(f"[DEBUG] Found nested dataset_organized at: {nested}", flush=True)
+                            nested_class = (nested / "classification" / "train").exists()
+                            nested_robo = (nested / "100.v1i.folder" / "train").exists()
+                            nested_yolo = (nested / "train" / "images").exists()
+                            print(f"  classification/train: {'✓' if nested_class else '✗'}", flush=True)
+                            print(f"  100.v1i.folder/train: {'✓' if nested_robo else '✗'}", flush=True)
+                            print(f"  train/images: {'✓' if nested_yolo else '✗'}", flush=True)
+                            
+                            # If found here, update organized_dir
+                            if nested_class or nested_robo or nested_yolo:
+                                organized_dir = nested
+                                print(f"[INFO] Using nested dataset_organized at: {organized_dir}", flush=True)
+                                logger.info(f"Found dataset in nested location: {organized_dir}")
+                                return True
+            
             logger.error("Dataset extracted but no valid structure found")
             return False
             
