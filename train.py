@@ -1064,6 +1064,14 @@ def download_dataset_from_server(script_dir, logger):
                         training_data_dir.mkdir(parents=True, exist_ok=True)
                         zip_ref.extractall(training_data_dir)
                         print(f"[INFO] Extracted to {training_data_dir}, dataset should be at {organized_dir}", flush=True)
+                        # Update organized_dir to point to the extracted location
+                        organized_dir = training_data_dir / root_folder
+                        print(f"[INFO] Updated organized_dir to: {organized_dir}", flush=True)
+                    # Check if root is 100.v1i.folder or classification directly
+                    elif root_folder == '100.v1i.folder' or root_folder == 'classification':
+                        # Extract to organized_dir, but files will be at root level
+                        zip_ref.extractall(organized_dir)
+                        print(f"[INFO] Extracted {root_folder} directly to {organized_dir}", flush=True)
                     else:
                         # Extract directly to organized_dir
                         zip_ref.extractall(organized_dir)
@@ -1081,10 +1089,32 @@ def download_dataset_from_server(script_dir, logger):
         
         # Verify extraction - data.yaml is optional for classification format
         # Check if dataset structure exists (classification, 100.v1i.folder, or YOLO)
+        # Also check if structure is nested inside dataset_organized folder
         has_classification = (organized_dir / "classification" / "train").exists()
         has_roboflow = (organized_dir / "100.v1i.folder" / "train").exists()
         has_yolo = (organized_dir / "train" / "images").exists()
         has_data_yaml = (organized_dir / "data.yaml").exists()
+        
+        # Also check if files are directly in organized_dir (no nested folder)
+        # This can happen if ZIP structure is flat
+        training_data_dir = script_dir / "training_data"
+        if training_data_dir.exists():
+            # Check if dataset_organized was created as subfolder
+            for item in training_data_dir.iterdir():
+                if item.is_dir() and "dataset" in item.name.lower():
+                    nested_organized = item
+                    nested_classification = (nested_organized / "classification" / "train").exists()
+                    nested_roboflow = (nested_organized / "100.v1i.folder" / "train").exists()
+                    nested_yolo = (nested_organized / "train" / "images").exists()
+                    
+                    if nested_classification or nested_roboflow or nested_yolo:
+                        print(f"[INFO] Found dataset in nested folder: {nested_organized}", flush=True)
+                        organized_dir = nested_organized
+                        has_classification = nested_classification
+                        has_roboflow = nested_roboflow
+                        has_yolo = nested_yolo
+                        has_data_yaml = (nested_organized / "data.yaml").exists()
+                        break
         
         if has_classification or has_roboflow or has_yolo:
             print(f"[OK] Dataset extracted successfully to {organized_dir}", flush=True)
@@ -1092,15 +1122,25 @@ def download_dataset_from_server(script_dir, logger):
                 print(f"[OK] Found data.yaml (optional for classification)", flush=True)
             else:
                 print(f"[INFO] No data.yaml found, but dataset structure exists (will detect classes from folders)", flush=True)
+            print(f"[DEBUG] Structure found:", flush=True)
+            print(f"  classification/train: {'✓' if has_classification else '✗'}", flush=True)
+            print(f"  100.v1i.folder/train: {'✓' if has_roboflow else '✗'}", flush=True)
+            print(f"  train/images: {'✓' if has_yolo else '✗'}", flush=True)
             logger.info(f"Dataset extracted to {organized_dir}")
             return True
         else:
             print("[ERROR] Dataset extracted but no valid structure found", flush=True)
+            print(f"[DEBUG] Checked in: {organized_dir}", flush=True)
             print(f"[DEBUG] Checked for:", flush=True)
             print(f"  classification/train: {'✓' if has_classification else '✗'}", flush=True)
             print(f"  100.v1i.folder/train: {'✓' if has_roboflow else '✗'}", flush=True)
             print(f"  train/images: {'✓' if has_yolo else '✗'}", flush=True)
             print(f"  data.yaml: {'✓' if has_data_yaml else '✗'} (optional)", flush=True)
+            # List what was actually extracted
+            if organized_dir.exists():
+                print(f"[DEBUG] Contents of {organized_dir}:", flush=True)
+                for item in organized_dir.iterdir():
+                    print(f"  - {item.name} ({'dir' if item.is_dir() else 'file'})", flush=True)
             logger.error("Dataset extracted but no valid structure found")
             return False
             
