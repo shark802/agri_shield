@@ -139,7 +139,9 @@ def find_onnx_model() -> str:
         else:
             print(f"   ⚠️  Server returned HTTP {info_response.status_code}, will use local models")
     except Exception as e:
+        import traceback
         print(f"   ⚠️  Error checking server: {e}")
+        print(f"   Traceback: {traceback.format_exc()}")
         print("   Will use local models if available")
     
     # FALLBACK: Check local files if server check failed
@@ -267,11 +269,11 @@ if ONNX_AVAILABLE:
         ONNX_MODEL_PATH = find_onnx_model()
         print(f"🔍 Found model at: {ONNX_MODEL_PATH}")
         
-        # Try to get class names and model metadata from server
+        # Try to get class names and model metadata from server (optional - don't fail if this fails)
         try:
             web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
             model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
-            info_response = requests.get(model_info_url, timeout=10)
+            info_response = requests.get(model_info_url, timeout=5)  # Shorter timeout
             if info_response.status_code == 200:
                 model_info = info_response.json()
                 if 'classes' in model_info and model_info['classes']:
@@ -285,6 +287,7 @@ if ONNX_AVAILABLE:
                     MODEL_ACCURACY = model_info['accuracy']
                     print(f"📊 Model accuracy: {MODEL_ACCURACY}%")
         except Exception as e:
+            # Don't fail app startup if this fails - just use defaults
             print(f"⚠️  Could not load class names from server: {e}")
             print("   Using default class names")
         
