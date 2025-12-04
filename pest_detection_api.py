@@ -305,13 +305,26 @@ if ONNX_AVAILABLE:
         
         print(f"✅ Model loaded successfully: {Path(ONNX_MODEL_PATH).name}")
         print(f"   Classes: {CLASS_NAMES}")
-    except Exception as e:
+    except FileNotFoundError as e:
+        # Model file not found - this is OK, app can still run (detection will fail but won't crash)
         import traceback
-        print(f"⚠️  Could not load ONNX model: {e}")
+        print(f"⚠️  ONNX model file not found: {e}")
         print(f"   Traceback: {traceback.format_exc()}")
+        print("   App will start but detection will be unavailable until a model is provided")
         session = None
         input_details = None
         output_details = None
+        ONNX_MODEL_PATH = None
+    except Exception as e:
+        # Any other error - log it but don't crash the app
+        import traceback
+        print(f"⚠️  Could not load ONNX model: {e}")
+        print(f"   Traceback: {traceback.format_exc()}")
+        print("   App will start but detection will be unavailable")
+        session = None
+        input_details = None
+        output_details = None
+        ONNX_MODEL_PATH = None
 else:
     session = None
     input_details = None
