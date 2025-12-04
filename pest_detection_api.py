@@ -291,16 +291,18 @@ if ONNX_AVAILABLE:
             print(f"⚠️  Could not load class names from server: {e}")
             print("   Using default class names")
         
+        # Set default class names only if not loaded from server
+        if not CLASS_NAMES:
+            CLASS_NAMES = [
+                "Rice_Bug",
+                "White stem borer",
+                "black-bug",
+                "brown_hopper",
+                "green_hopper",
+            ]
+        
         session, input_details, output_details = load_onnx_model(ONNX_MODEL_PATH)
         
-        # Default class names (update based on your model)
-        CLASS_NAMES = [
-            "Rice_Bug",
-            "White stem borer",
-            "black-bug",
-            "brown_hopper",
-            "green_hopper",
-        ]
         print(f"✅ Model loaded successfully: {Path(ONNX_MODEL_PATH).name}")
         print(f"   Classes: {CLASS_NAMES}")
     except Exception as e:
