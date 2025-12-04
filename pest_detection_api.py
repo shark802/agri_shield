@@ -65,27 +65,102 @@ print(f"   Confidence gap: {CONFIDENCE_GAP_REQUIREMENT}")
 print(f"   YOLO threshold: {YOLO_CONF_THRESHOLD}")
 
 def find_onnx_model() -> str:
-    """Find ONNX model file - checks local files and downloads from server if needed"""
+    """Find ONNX model file - checks server for latest model first, then falls back to local"""
     base_dir = Path(__file__).resolve().parent
     
-    # Priority order - check models/ directory first (for Heroku deployment)
-    # "best 2.onnx" is the default model from git repository
+    # FIRST: Check server for active model (always check for updates)
+    print("🔍 Checking server for active model...")
+    try:
+        web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
+        model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
+        info_response = requests.get(model_info_url, timeout=10)
+        
+        if info_response.status_code == 200:
+            model_info = info_response.json()
+            server_version = model_info.get('version')
+            server_accuracy = model_info.get('accuracy')
+            
+            print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
+            
+            # Check if we have a local model and compare
+            local_model_path = base_dir / "models" / "best.onnx"
+            should_download = True
+            
+            if local_model_path.exists():
+                # Check if local model is outdated (compare versions or always update)
+                # For now, always download to ensure we have the latest
+                print(f"📦 Local model exists, but checking for updates...")
+                should_download = True
+            
+            if should_download:
+                # Download the active model from server
+                download_url = f"{web_server_url}/api/training/get_active_model.php"
+                print(f"📥 Downloading active model from server: {server_version}")
+                
+                response = requests.get(download_url, timeout=120, stream=True)
+                
+                if response.status_code == 200:
+                    # Save to models directory
+                    models_dir = base_dir / "models"
+                    models_dir.mkdir(exist_ok=True)
+                    
+                    downloaded_model_path = models_dir / "best.onnx"
+                    
+                    # Get model metadata from headers
+                    model_version = response.headers.get('X-Model-Version', server_version)
+                    model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
+                    
+                    # Download with progress
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    
+                    with open(downloaded_model_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_size > 0:
+                                    progress = (downloaded / total_size) * 100
+                                    if downloaded % (1024 * 1024) == 0:  # Print every MB
+                                        print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)", end='\r')
+                    
+                    print(f"\n   ✅ Model downloaded successfully: {downloaded_model_path.name}")
+                    print(f"   Version: {model_version}")
+                    print(f"   Accuracy: {model_accuracy}%")
+                    
+                    # Store model metadata globally
+                    global MODEL_VERSION, MODEL_ACCURACY
+                    MODEL_VERSION = model_version if model_version != 'N/A' else None
+                    MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
+                    
+                    return str(downloaded_model_path)
+                else:
+                    print(f"   ⚠️  Failed to download model: HTTP {response.status_code}")
+        else:
+            print(f"   ⚠️  Server returned HTTP {info_response.status_code}, will use local models")
+    except Exception as e:
+        print(f"   ⚠️  Error checking server: {e}")
+        print("   Will use local models if available")
+    
+    # FALLBACK: Check local files if server check failed
+    print("🔍 Checking local model files...")
     candidates = [
-        base_dir / "models" / "best 2.onnx",  # Default model from git (highest priority)
-        base_dir / "models" / "best.onnx",    # Trained models copy here
+        base_dir / "models" / "best.onnx",    # Downloaded models (highest priority)
+        base_dir / "models" / "best 2.onnx",  # Default model from git
         base_dir / "models" / "best5.onnx",
-        base_dir / "deployment" / "models" / "best 2.onnx",
         base_dir / "deployment" / "models" / "best.onnx",
+        base_dir / "deployment" / "models" / "best 2.onnx",
         base_dir / "deployment" / "models" / "best5.onnx",
-        base_dir / "datasets" / "best 2.onnx",
         base_dir / "datasets" / "best.onnx",
+        base_dir / "datasets" / "best 2.onnx",
         base_dir / "datasets" / "best5.onnx",
         base_dir / "pest_detection_ml" / "models" / "best.onnx",
     ]
     
-    # Check standard locations first
+    # Check standard locations
     for candidate in candidates:
         if candidate.exists():
+            print(f"📦 Found local model: {candidate.name}")
             return str(candidate)
     
     # If no standard model found, check job directories (for trained models on Heroku)
@@ -104,9 +179,7 @@ def find_onnx_model() -> str:
                 print(f"📦 Found trained model in {job_dir.name}: {onnx_files[0].name}")
                 return str(onnx_files[0])
     
-    # If still not found and we're on Heroku, try to download active model from web server
-    # (Models are uploaded to web server during training, but Heroku needs local copy)
-    if not any(c.exists() for c in candidates):
+    # If still not found, raise error
         print("📥 No local model found, attempting to download active model from server...")
         try:
             # Get web server URL from environment or use default
