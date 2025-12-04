@@ -70,78 +70,76 @@ def find_onnx_model() -> str:
     models_dir = base_dir / "models"
     models_dir.mkdir(exist_ok=True)
     
-    # FIRST: ALWAYS check server for latest model (even if local model exists)
+    # FIRST: ALWAYS try to download latest model from server
     print("🔍 Checking server for latest model...")
     try:
         web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
-        model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
-        info_response = requests.get(model_info_url, timeout=5)  # Short timeout for info check
         
-        if info_response.status_code == 200:
-            model_info = info_response.json()
-            server_version = model_info.get('version')
-            server_accuracy = model_info.get('accuracy')
+        # Try to get model info first (optional - if it fails, still try download)
+        model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
+        server_version = None
+        server_accuracy = None
+        
+        try:
+            info_response = requests.get(model_info_url, timeout=5)
+            if info_response.status_code == 200:
+                model_info = info_response.json()
+                server_version = model_info.get('version')
+                server_accuracy = model_info.get('accuracy')
+                print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
+            elif info_response.status_code == 404:
+                # 404 means no active model in database, but model file might still exist
+                print(f"   ℹ️  No active model in database (404), but trying download endpoint anyway...")
+            else:
+                print(f"   ⚠️  Model info check failed: HTTP {info_response.status_code}, trying download endpoint...")
+        except Exception as e:
+            print(f"   ⚠️  Model info check error: {e}, trying download endpoint...")
+        
+        # Always try to download (even if info check failed)
+        print(f"📥 Attempting to download latest model from server...")
+        download_url = f"{web_server_url}/api/training/get_active_model.php"
+        response = requests.get(download_url, timeout=180, stream=True)  # 3 minutes for 42MB
+        
+        if response.status_code == 200:
+            downloaded_model_path = models_dir / "best.onnx"
             
-            print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
+            # Download with progress
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
             
-            # Check if we already have this version
-            downloaded_model = models_dir / "best.onnx"
-            best2_model = models_dir / "best 2.onnx"
+            with open(downloaded_model_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0 and downloaded % (5 * 1024 * 1024) == 0:  # Print every 5MB
+                            progress = (downloaded / total_size) * 100
+                            print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)")
             
-            # If we have a downloaded model, check if it's the same version
-            should_download = True
-            if downloaded_model.exists():
-                # Check server metadata to see if we need to update
-                # For now, always download to ensure we have the latest
-                print(f"📦 Local model exists, but downloading latest from server to ensure it's up to date...")
-                should_download = True
+            # Get version from headers or use from info check
+            model_version = response.headers.get('X-Model-Version', server_version or 'N/A')
+            model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy) if server_accuracy else 'N/A')
             
-            if should_download:
-                print(f"📥 Downloading latest model from server (this may take a minute for 42MB)...")
-                
-                # Download with longer timeout for large files (42MB)
-                download_url = f"{web_server_url}/api/training/get_active_model.php"
-                response = requests.get(download_url, timeout=180, stream=True)  # 3 minutes for 42MB
-                
-                if response.status_code == 200:
-                    downloaded_model_path = models_dir / "best.onnx"
-                    
-                    # Download with progress
-                    total_size = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-                    
-                    with open(downloaded_model_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                if total_size > 0 and downloaded % (5 * 1024 * 1024) == 0:  # Print every 5MB
-                                    progress = (downloaded / total_size) * 100
-                                    print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)")
-                    
-                    model_version = response.headers.get('X-Model-Version', server_version)
-                    model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
-                    
-                    file_size = downloaded_model_path.stat().st_size / (1024 * 1024)  # Size in MB
-                    print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%) - {file_size:.2f} MB")
-                    
-                    # Copy to best 2.onnx to replace the old default model
-                    best2_path = models_dir / "best 2.onnx"
-                    import shutil
-                    shutil.copy2(downloaded_model_path, best2_path)
-                    print(f"   📋 Copied latest model to best 2.onnx (replacing old default)")
-                    
-                    # Store model metadata globally
-                    global MODEL_VERSION, MODEL_ACCURACY
-                    MODEL_VERSION = model_version if model_version != 'N/A' else None
-                    MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
-                    
-                    return str(downloaded_model_path)
-                else:
-                    print(f"   ⚠️  Download failed: HTTP {response.status_code}")
-                    print(f"   Will use local models if available")
+            file_size = downloaded_model_path.stat().st_size / (1024 * 1024)  # Size in MB
+            print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%) - {file_size:.2f} MB")
+            
+            # Copy to best 2.onnx to replace the old default model
+            best2_path = models_dir / "best 2.onnx"
+            import shutil
+            shutil.copy2(downloaded_model_path, best2_path)
+            print(f"   📋 Copied latest model to best 2.onnx (replacing old default)")
+            
+            # Store model metadata globally
+            global MODEL_VERSION, MODEL_ACCURACY
+            MODEL_VERSION = model_version if model_version != 'N/A' else None
+            MODEL_ACCURACY = float(model_accuracy) if model_accuracy != 'N/A' else None
+            
+            return str(downloaded_model_path)
+        elif response.status_code == 404:
+            print(f"   ⚠️  No model available on server (404)")
+            print(f"   Will use local models if available")
         else:
-            print(f"   ⚠️  Server check failed: HTTP {info_response.status_code}")
+            print(f"   ⚠️  Download failed: HTTP {response.status_code}")
             print(f"   Will use local models if available")
     except requests.exceptions.Timeout:
         print(f"   ⚠️  Server check timed out (will use local models)")
