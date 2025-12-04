@@ -462,8 +462,10 @@ class ModelTrainer:
             progress_line = f"  {batch_idx+1}/{len(dataloader)}  {loss.item():.4f}  {current_acc:.1f}%  [{bar}] {batch_progress:.0f}%"
             print(progress_line, end='\r', flush=True)
             
-            # Also log every 10 batches
-            if batch_idx % 10 == 0 or batch_idx == len(dataloader) - 1:
+            # Log every batch to ensure visibility in logs (not just every 10)
+            # This ensures progress is visible even if \r doesn't work in log streams
+            if batch_idx % 5 == 0 or batch_idx == len(dataloader) - 1:
+                print(f"Batch {batch_idx+1}/{len(dataloader)}, Loss: {loss.item():.4f}, Acc: {current_acc:.2f}%", flush=True)
                 self.logger.info(f'Batch {batch_idx+1}/{len(dataloader)}, Loss: {loss.item():.4f}, Acc: {current_acc:.2f}%')
                 sys.stdout.flush()
         
