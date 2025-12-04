@@ -1052,11 +1052,25 @@ def download_dataset_from_server(script_dir, logger):
                 return False
             
             # Show sample of ZIP structure for debugging
-            print(f"[DEBUG] Sample ZIP paths (first 10):", flush=True)
-            for path in file_list[:10]:
+            print(f"[DEBUG] Sample ZIP paths (first 20):", flush=True)
+            for path in file_list[:20]:
                 print(f"  {path}", flush=True)
-            if len(file_list) > 10:
-                print(f"  ... and {len(file_list) - 10} more files", flush=True)
+            if len(file_list) > 20:
+                print(f"  ... and {len(file_list) - 20} more files", flush=True)
+            
+            # Check for 100.v1i.folder structure in ZIP
+            roboflow_paths = [p for p in file_list if '100.v1i.folder' in p]
+            if roboflow_paths:
+                print(f"[DEBUG] Found {len(roboflow_paths)} files with '100.v1i.folder' in path", flush=True)
+                # Check if they're in train/, valid/, or test/ subdirectories
+                train_paths = [p for p in roboflow_paths if '/train/' in p or '\\train\\' in p]
+                valid_paths = [p for p in roboflow_paths if '/valid/' in p or '\\valid\\' in p or '/val/' in p or '\\val\\' in p]
+                test_paths = [p for p in roboflow_paths if '/test/' in p or '\\test\\' in p]
+                print(f"[DEBUG] Roboflow structure in ZIP: train={len(train_paths)}, valid={len(valid_paths)}, test={len(test_paths)}", flush=True)
+                if train_paths:
+                    print(f"[DEBUG] Sample train path: {train_paths[0]}", flush=True)
+                if valid_paths:
+                    print(f"[DEBUG] Sample valid path: {valid_paths[0]}", flush=True)
             
             # Check if ZIP has a root folder
             if file_list:
