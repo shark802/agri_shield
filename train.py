@@ -966,9 +966,15 @@ def download_dataset_from_server(script_dir, logger):
         import zipfile
         import tempfile
         
-        # Check if dataset already exists locally
+        # Check if dataset already exists locally (data.yaml is optional for classification)
         organized_dir = script_dir / "training_data" / "dataset_organized"
-        if organized_dir.exists() and (organized_dir / "data.yaml").exists():
+        # Check if dataset exists (either with data.yaml or with classification/100.v1i.folder structure)
+        has_dataset = organized_dir.exists() and (
+            (organized_dir / "data.yaml").exists() or
+            (organized_dir / "classification" / "train").exists() or
+            (organized_dir / "100.v1i.folder" / "train").exists()
+        )
+        if has_dataset:
             print("[INFO] Dataset already exists locally, skipping download", flush=True)
             return True
         
@@ -1073,47 +1079,29 @@ def download_dataset_from_server(script_dir, logger):
         # Clean up temporary ZIP
         os.unlink(tmp_zip_path)
         
-        # Verify extraction - check multiple possible locations
-        possible_locations = [
-            organized_dir / "data.yaml",  # Expected location
-            script_dir / "training_data" / "dataset_organized" / "data.yaml",  # If extracted with root folder
-        ]
+        # Verify extraction - data.yaml is optional for classification format
+        # Check if dataset structure exists (classification, 100.v1i.folder, or YOLO)
+        has_classification = (organized_dir / "classification" / "train").exists()
+        has_roboflow = (organized_dir / "100.v1i.folder" / "train").exists()
+        has_yolo = (organized_dir / "train" / "images").exists()
+        has_data_yaml = (organized_dir / "data.yaml").exists()
         
-        # Also check if dataset_organized was created as a subfolder
-        training_data_dir = script_dir / "training_data"
-        if training_data_dir.exists():
-            for item in training_data_dir.iterdir():
-                if item.is_dir() and "dataset" in item.name.lower():
-                    yaml_path = item / "data.yaml"
-                    if yaml_path.exists():
-                        possible_locations.append(yaml_path)
-                        # If found here, update organized_dir reference
-                        organized_dir = item
-                        print(f"[INFO] Found dataset in subfolder: {organized_dir}", flush=True)
-        
-        data_yaml_path = None
-        for loc in possible_locations:
-            if loc.exists():
-                data_yaml_path = loc
-                print(f"[OK] Found data.yaml at: {data_yaml_path}", flush=True)
-                break
-        
-        if data_yaml_path and (organized_dir / "data.yaml").exists():
+        if has_classification or has_roboflow or has_yolo:
             print(f"[OK] Dataset extracted successfully to {organized_dir}", flush=True)
+            if has_data_yaml:
+                print(f"[OK] Found data.yaml (optional for classification)", flush=True)
+            else:
+                print(f"[INFO] No data.yaml found, but dataset structure exists (will detect classes from folders)", flush=True)
             logger.info(f"Dataset extracted to {organized_dir}")
             return True
         else:
-            print("[ERROR] Dataset extracted but data.yaml not found", flush=True)
-            print(f"[DEBUG] Checked locations:", flush=True)
-            for loc in possible_locations:
-                exists = "✓" if loc.exists() else "✗"
-                print(f"  {exists} {loc}", flush=True)
-            # List what was actually extracted
-            if training_data_dir.exists():
-                print(f"[DEBUG] Contents of {training_data_dir}:", flush=True)
-                for item in training_data_dir.iterdir():
-                    print(f"  - {item.name} ({'dir' if item.is_dir() else 'file'})", flush=True)
-            logger.error("Dataset extracted but data.yaml not found")
+            print("[ERROR] Dataset extracted but no valid structure found", flush=True)
+            print(f"[DEBUG] Checked for:", flush=True)
+            print(f"  classification/train: {'✓' if has_classification else '✗'}", flush=True)
+            print(f"  100.v1i.folder/train: {'✓' if has_roboflow else '✗'}", flush=True)
+            print(f"  train/images: {'✓' if has_yolo else '✗'}", flush=True)
+            print(f"  data.yaml: {'✓' if has_data_yaml else '✗'} (optional)", flush=True)
+            logger.error("Dataset extracted but no valid structure found")
             return False
             
     except requests.exceptions.RequestException as e:
@@ -1255,21 +1243,23 @@ def create_combined_dataset(logger):
                 logger.error("Dataset downloaded but no valid format found")
                 raise FileNotFoundError("Dataset downloaded but no valid format found. Expected train/images/ (YOLO), classification/train/ (classification), or 100.v1i.folder/ (Roboflow).")
     
-    # PRIORITY 1: Check for organized dataset from smart import (has data.yaml)
+    # PRIORITY 1: Check for organized dataset (data.yaml is optional for classification)
     organized_dir = script_dir / "training_data" / "dataset_organized"
     organized_yaml = organized_dir / "data.yaml"
     
-    # Always try to load classes from data.yaml first (from organized dataset created during import)
-    pest_classes = load_classes_from_yaml(organized_yaml)
-    
+    # Try to load classes from data.yaml if it exists (optional)
+    pest_classes = None
     if organized_yaml.exists():
+        pest_classes = load_classes_from_yaml(organized_yaml)
         if pest_classes:
-            print(f"[OK] Found data.yaml from import", flush=True)
-            print(f"  Loaded {len(pest_classes)} classes from data.yaml: {pest_classes}", flush=True)
+            print(f"[OK] Found data.yaml with {len(pest_classes)} classes: {pest_classes}", flush=True)
             logger.info(f"Loaded {len(pest_classes)} classes from data.yaml: {pest_classes}")
         else:
-            print(f"Warning: data.yaml exists but could not parse classes", flush=True)
-            logger.warning("data.yaml exists but could not parse classes")
+            print(f"[INFO] data.yaml exists but could not parse classes, will detect from folders", flush=True)
+            logger.info("data.yaml exists but could not parse classes, will detect from folders")
+    else:
+        print(f"[INFO] No data.yaml found (optional for classification), will detect classes from folder structure", flush=True)
+        logger.info("No data.yaml found, will detect classes from folder structure")
     
     # PRIORITY 0.3: Check for 100.v1i.folder structure (original Roboflow dataset)
     # Convert it to classification format
