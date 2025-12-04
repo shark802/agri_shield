@@ -68,12 +68,23 @@ def find_onnx_model() -> str:
     """Find ONNX model file - checks local files first, then optionally checks server"""
     base_dir = Path(__file__).resolve().parent
     
-    # FIRST: Try to download from server (with short timeout, non-blocking)
+    # FIRST: Check if we already have a downloaded model (best.onnx)
+    models_dir = base_dir / "models"
+    models_dir.mkdir(exist_ok=True)
+    downloaded_model = models_dir / "best.onnx"
+    
+    if downloaded_model.exists():
+        print(f"📦 Found downloaded model: best.onnx")
+        # Check server for updates in background (non-blocking)
+        _check_server_for_updates_async(base_dir)
+        return str(downloaded_model)
+    
+    # SECOND: Try to download from server (with reasonable timeout)
     print("🔍 Checking server for latest model...")
     try:
         web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
         model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
-        info_response = requests.get(model_info_url, timeout=3)  # Very short timeout
+        info_response = requests.get(model_info_url, timeout=5)
         
         if info_response.status_code == 200:
             model_info = info_response.json()
@@ -81,16 +92,13 @@ def find_onnx_model() -> str:
             server_accuracy = model_info.get('accuracy')
             
             print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
+            print(f"📥 Downloading latest model from server (this may take a minute)...")
             
-            # Try to download (with timeout to not block startup)
+            # Download with longer timeout for large files (42MB)
             download_url = f"{web_server_url}/api/training/get_active_model.php"
-            print(f"📥 Downloading latest model from server...")
-            
-            response = requests.get(download_url, timeout=10, stream=True)  # Short timeout
+            response = requests.get(download_url, timeout=180, stream=True)  # 3 minutes for 42MB
             
             if response.status_code == 200:
-                models_dir = base_dir / "models"
-                models_dir.mkdir(exist_ok=True)
                 downloaded_model_path = models_dir / "best.onnx"
                 
                 # Download with progress
@@ -102,6 +110,9 @@ def find_onnx_model() -> str:
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
+                            if total_size > 0 and downloaded % (5 * 1024 * 1024) == 0:  # Print every 5MB
+                                progress = (downloaded / total_size) * 100
+                                print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)")
                 
                 model_version = response.headers.get('X-Model-Version', server_version)
                 model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
@@ -118,6 +129,8 @@ def find_onnx_model() -> str:
                 print(f"   ⚠️  Download failed: HTTP {response.status_code}")
         else:
             print(f"   ⚠️  Server check failed: HTTP {info_response.status_code}")
+    except requests.exceptions.Timeout:
+        print(f"   ⚠️  Server check timed out (will use local models)")
     except Exception as e:
         print(f"   ⚠️  Server check failed: {e}")
         print("   Will use local models")
