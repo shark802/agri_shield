@@ -68,7 +68,61 @@ def find_onnx_model() -> str:
     """Find ONNX model file - checks local files first, then optionally checks server"""
     base_dir = Path(__file__).resolve().parent
     
-    # FIRST: Check local files (fast, no network dependency)
+    # FIRST: Try to download from server (with short timeout, non-blocking)
+    print("🔍 Checking server for latest model...")
+    try:
+        web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
+        model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
+        info_response = requests.get(model_info_url, timeout=3)  # Very short timeout
+        
+        if info_response.status_code == 200:
+            model_info = info_response.json()
+            server_version = model_info.get('version')
+            server_accuracy = model_info.get('accuracy')
+            
+            print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
+            
+            # Try to download (with timeout to not block startup)
+            download_url = f"{web_server_url}/api/training/get_active_model.php"
+            print(f"📥 Downloading latest model from server...")
+            
+            response = requests.get(download_url, timeout=10, stream=True)  # Short timeout
+            
+            if response.status_code == 200:
+                models_dir = base_dir / "models"
+                models_dir.mkdir(exist_ok=True)
+                downloaded_model_path = models_dir / "best.onnx"
+                
+                # Download with progress
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                with open(downloaded_model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                
+                model_version = response.headers.get('X-Model-Version', server_version)
+                model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
+                
+                print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%)")
+                
+                # Store model metadata globally
+                global MODEL_VERSION, MODEL_ACCURACY
+                MODEL_VERSION = model_version if model_version != 'N/A' else None
+                MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
+                
+                return str(downloaded_model_path)
+            else:
+                print(f"   ⚠️  Download failed: HTTP {response.status_code}")
+        else:
+            print(f"   ⚠️  Server check failed: HTTP {info_response.status_code}")
+    except Exception as e:
+        print(f"   ⚠️  Server check failed: {e}")
+        print("   Will use local models")
+    
+    # FALLBACK: Check local files (fast, no network dependency)
     print("🔍 Checking local model files...")
     candidates = [
         base_dir / "models" / "best.onnx",    # Downloaded models (highest priority)
@@ -87,8 +141,6 @@ def find_onnx_model() -> str:
     for candidate in candidates:
         if candidate.exists():
             print(f"📦 Found local model: {candidate.name}")
-            # Found a local model - now optionally check server for updates (non-blocking)
-            _check_server_for_updates_async(base_dir)
             return str(candidate)
     
     # If no standard model found, check job directories (for trained models on Heroku)
@@ -107,55 +159,6 @@ def find_onnx_model() -> str:
                 print(f"📦 Found trained model in {job_dir.name}: {onnx_files[0].name}")
                 return str(onnx_files[0])
     
-    # If still not found, try to download from server (last resort)
-    print("📥 No local model found, attempting to download from server...")
-    try:
-        web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
-        download_url = f"{web_server_url}/api/training/get_active_model.php"
-        
-        print(f"   Downloading from: {download_url}")
-        
-        response = requests.get(download_url, timeout=30, stream=True)  # Shorter timeout
-        
-        if response.status_code == 200:
-            # Save to models directory
-            models_dir = base_dir / "models"
-            models_dir.mkdir(exist_ok=True)
-            
-            downloaded_model_path = models_dir / "best.onnx"
-            
-            # Download with progress
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            with open(downloaded_model_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            progress = (downloaded / total_size) * 100
-                            if downloaded % (1024 * 1024) == 0:  # Print every MB
-                                print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)", end='\r')
-            
-            model_version = response.headers.get('X-Model-Version', 'N/A')
-            model_accuracy = response.headers.get('X-Model-Accuracy', 'N/A')
-            
-            print(f"\n   ✅ Model downloaded successfully: {downloaded_model_path.name}")
-            print(f"   Version: {model_version}")
-            print(f"   Accuracy: {model_accuracy}%")
-            
-            # Store model metadata globally
-            global MODEL_VERSION, MODEL_ACCURACY
-            MODEL_VERSION = model_version if model_version != 'N/A' else None
-            MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
-            
-            return str(downloaded_model_path)
-        else:
-            print(f"   ⚠️  Failed to download model: HTTP {response.status_code}")
-    except Exception as e:
-        print(f"   ⚠️  Error downloading model: {e}")
-        print("   Will try to use local models if available.")
     
     # If still not found, raise error
     raise FileNotFoundError(
