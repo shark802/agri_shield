@@ -951,7 +951,15 @@ def detect() -> Any:
         "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none",
         "framework": "ONNX Runtime",
         "known_classes": CLASS_NAMES  # List of all known pest classes
-    })
+    }
+    
+    # Add model metadata if available
+    if MODEL_VERSION:
+        response_data["model_version"] = MODEL_VERSION
+    if MODEL_ACCURACY:
+        response_data["model_accuracy"] = float(MODEL_ACCURACY)
+    
+    return jsonify(response_data)
 
 # ============================================================================
 # TRAINING ROUTES
