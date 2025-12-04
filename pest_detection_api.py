@@ -139,9 +139,16 @@ def find_onnx_model() -> str:
     
     # FALLBACK: Check local files (fast, no network dependency)
     print("🔍 Checking local model files...")
+    
+    # IMPORTANT: Check models/best.onnx first (downloaded models have highest priority)
+    downloaded_check = models_dir / "best.onnx"
+    if downloaded_check.exists():
+        file_size = downloaded_check.stat().st_size / (1024 * 1024)  # Size in MB
+        print(f"📦 Found downloaded model in fallback: best.onnx ({file_size:.2f} MB)")
+        return str(downloaded_check)
+    
     candidates = [
-        base_dir / "models" / "best.onnx",    # Downloaded models (highest priority)
-        base_dir / "models" / "best 2.onnx",  # Default model from git
+        base_dir / "models" / "best 2.onnx",  # Default model from git (lower priority)
         base_dir / "models" / "best5.onnx",
         base_dir / "deployment" / "models" / "best.onnx",
         base_dir / "deployment" / "models" / "best 2.onnx",
@@ -155,7 +162,8 @@ def find_onnx_model() -> str:
     # Check standard locations
     for candidate in candidates:
         if candidate.exists():
-            print(f"📦 Found local model: {candidate.name}")
+            file_size = candidate.stat().st_size / (1024 * 1024)  # Size in MB
+            print(f"📦 Found local model: {candidate.name} ({file_size:.2f} MB)")
             return str(candidate)
     
     # If no standard model found, check job directories (for trained models on Heroku)
