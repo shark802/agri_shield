@@ -74,7 +74,8 @@ def find_onnx_model() -> str:
     downloaded_model = models_dir / "best.onnx"
     
     if downloaded_model.exists():
-        print(f"📦 Found downloaded model: best.onnx")
+        file_size = downloaded_model.stat().st_size / (1024 * 1024)  # Size in MB
+        print(f"📦 Found downloaded model: best.onnx ({file_size:.2f} MB)")
         # Check server for updates in background (non-blocking)
         _check_server_for_updates_async(base_dir)
         return str(downloaded_model)
@@ -117,7 +118,8 @@ def find_onnx_model() -> str:
                 model_version = response.headers.get('X-Model-Version', server_version)
                 model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
                 
-                print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%)")
+                file_size = downloaded_model_path.stat().st_size / (1024 * 1024)  # Size in MB
+                print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%) - {file_size:.2f} MB")
                 
                 # Store model metadata globally
                 global MODEL_VERSION, MODEL_ACCURACY
@@ -248,7 +250,9 @@ def load_onnx_model(model_path: str):
 if ONNX_AVAILABLE:
     try:
         ONNX_MODEL_PATH = find_onnx_model()
+        model_name = Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
         print(f"🔍 Found model at: {ONNX_MODEL_PATH}")
+        print(f"📋 Model filename: {model_name}")
         
         # Try to get class names and model metadata from server (optional - don't fail if this fails)
         try:
