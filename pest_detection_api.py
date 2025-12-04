@@ -195,6 +195,7 @@ if ONNX_AVAILABLE:
         print(f"🔍 Found model at: {ONNX_MODEL_PATH}")
         
         # Try to get class names and model metadata from server
+        global MODEL_VERSION, MODEL_ACCURACY  # Declare global at start of function
         try:
             web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
             model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
@@ -206,7 +207,6 @@ if ONNX_AVAILABLE:
                     print(f"📋 Loaded class names from server: {CLASS_NAMES}")
                 
                 # Store model metadata
-                global MODEL_VERSION, MODEL_ACCURACY
                 MODEL_VERSION = model_info.get('version')
                 MODEL_ACCURACY = model_info.get('accuracy')
                 if MODEL_ACCURACY:
