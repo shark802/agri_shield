@@ -65,7 +65,7 @@ print(f"   Confidence gap: {CONFIDENCE_GAP_REQUIREMENT}")
 print(f"   YOLO threshold: {YOLO_CONF_THRESHOLD}")
 
 def find_onnx_model() -> str:
-    """Find ONNX model file - checks local files first, then optionally checks server"""
+    """Find ONNX model file - checks for downloaded model first, then server, then local files"""
     base_dir = Path(__file__).resolve().parent
     
     # FIRST: Check if we already have a downloaded model (best.onnx)
@@ -84,7 +84,7 @@ def find_onnx_model() -> str:
     try:
         web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
         model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
-        info_response = requests.get(model_info_url, timeout=5)
+        info_response = requests.get(model_info_url, timeout=5)  # Short timeout for info check
         
         if info_response.status_code == 200:
             model_info = info_response.json()
@@ -92,7 +92,7 @@ def find_onnx_model() -> str:
             server_accuracy = model_info.get('accuracy')
             
             print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
-            print(f"📥 Downloading latest model from server (this may take a minute)...")
+            print(f"📥 Downloading latest model from server (this may take a minute for 42MB)...")
             
             # Download with longer timeout for large files (42MB)
             download_url = f"{web_server_url}/api/training/get_active_model.php"
@@ -130,7 +130,7 @@ def find_onnx_model() -> str:
         else:
             print(f"   ⚠️  Server check failed: HTTP {info_response.status_code}")
     except requests.exceptions.Timeout:
-        print(f"   ⚠️  Server check timed out (will use local models)")
+        print(f"   ⚠️  Server check/download timed out (will use local models)")
     except Exception as e:
         print(f"   ⚠️  Server check failed: {e}")
         print("   Will use local models")
