@@ -65,30 +65,12 @@ print(f"   Confidence gap: {CONFIDENCE_GAP_REQUIREMENT}")
 print(f"   YOLO threshold: {YOLO_CONF_THRESHOLD}")
 
 def find_onnx_model() -> str:
-    """Find ONNX model file - checks for downloaded model first, then server, then local files"""
+    """Find ONNX model file - ALWAYS checks server first, then uses local files as fallback"""
     base_dir = Path(__file__).resolve().parent
-    
-    # FIRST: Check if we already have a downloaded model (best.onnx)
     models_dir = base_dir / "models"
     models_dir.mkdir(exist_ok=True)
-    downloaded_model = models_dir / "best.onnx"
     
-    if downloaded_model.exists():
-        file_size = downloaded_model.stat().st_size / (1024 * 1024)  # Size in MB
-        print(f"📦 Found downloaded model: best.onnx ({file_size:.2f} MB)")
-        
-        # Also copy to best 2.onnx to ensure it's up to date
-        best2_path = models_dir / "best 2.onnx"
-        import shutil
-        if not best2_path.exists() or best2_path.stat().st_size != downloaded_model.stat().st_size:
-            shutil.copy2(downloaded_model, best2_path)
-            print(f"   📋 Updated best 2.onnx with latest model")
-        
-        # Check server for updates in background (non-blocking)
-        _check_server_for_updates_async(base_dir)
-        return str(downloaded_model)
-    
-    # SECOND: Try to download from server (with reasonable timeout)
+    # FIRST: ALWAYS check server for latest model (even if local model exists)
     print("🔍 Checking server for latest model...")
     try:
         web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
@@ -101,55 +83,73 @@ def find_onnx_model() -> str:
             server_accuracy = model_info.get('accuracy')
             
             print(f"📊 Server has active model: {server_version} (accuracy: {server_accuracy}%)")
-            print(f"📥 Downloading latest model from server (this may take a minute for 42MB)...")
             
-            # Download with longer timeout for large files (42MB)
-            download_url = f"{web_server_url}/api/training/get_active_model.php"
-            response = requests.get(download_url, timeout=180, stream=True)  # 3 minutes for 42MB
+            # Check if we already have this version
+            downloaded_model = models_dir / "best.onnx"
+            best2_model = models_dir / "best 2.onnx"
             
-            if response.status_code == 200:
-                downloaded_model_path = models_dir / "best.onnx"
+            # If we have a downloaded model, check if it's the same version
+            should_download = True
+            if downloaded_model.exists():
+                # Check server metadata to see if we need to update
+                # For now, always download to ensure we have the latest
+                print(f"📦 Local model exists, but downloading latest from server to ensure it's up to date...")
+                should_download = True
+            
+            if should_download:
+                print(f"📥 Downloading latest model from server (this may take a minute for 42MB)...")
                 
-                # Download with progress
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
+                # Download with longer timeout for large files (42MB)
+                download_url = f"{web_server_url}/api/training/get_active_model.php"
+                response = requests.get(download_url, timeout=180, stream=True)  # 3 minutes for 42MB
                 
-                with open(downloaded_model_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total_size > 0 and downloaded % (5 * 1024 * 1024) == 0:  # Print every 5MB
-                                progress = (downloaded / total_size) * 100
-                                print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)")
-                
-                model_version = response.headers.get('X-Model-Version', server_version)
-                model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
-                
-                file_size = downloaded_model_path.stat().st_size / (1024 * 1024)  # Size in MB
-                print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%) - {file_size:.2f} MB")
-                
-                # Copy to best 2.onnx to replace the old default model
-                best2_path = models_dir / "best 2.onnx"
-                import shutil
-                shutil.copy2(downloaded_model_path, best2_path)
-                print(f"   📋 Copied latest model to best 2.onnx (replacing old default)")
-                
-                # Store model metadata globally
-                global MODEL_VERSION, MODEL_ACCURACY
-                MODEL_VERSION = model_version if model_version != 'N/A' else None
-                MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
-                
-                return str(downloaded_model_path)
-            else:
-                print(f"   ⚠️  Download failed: HTTP {response.status_code}")
+                if response.status_code == 200:
+                    downloaded_model_path = models_dir / "best.onnx"
+                    
+                    # Download with progress
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    
+                    with open(downloaded_model_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_size > 0 and downloaded % (5 * 1024 * 1024) == 0:  # Print every 5MB
+                                    progress = (downloaded / total_size) * 100
+                                    print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)")
+                    
+                    model_version = response.headers.get('X-Model-Version', server_version)
+                    model_accuracy = response.headers.get('X-Model-Accuracy', str(server_accuracy))
+                    
+                    file_size = downloaded_model_path.stat().st_size / (1024 * 1024)  # Size in MB
+                    print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%) - {file_size:.2f} MB")
+                    
+                    # Copy to best 2.onnx to replace the old default model
+                    best2_path = models_dir / "best 2.onnx"
+                    import shutil
+                    shutil.copy2(downloaded_model_path, best2_path)
+                    print(f"   📋 Copied latest model to best 2.onnx (replacing old default)")
+                    
+                    # Store model metadata globally
+                    global MODEL_VERSION, MODEL_ACCURACY
+                    MODEL_VERSION = model_version if model_version != 'N/A' else None
+                    MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
+                    
+                    return str(downloaded_model_path)
+                else:
+                    print(f"   ⚠️  Download failed: HTTP {response.status_code}")
+                    print(f"   Will use local models if available")
         else:
             print(f"   ⚠️  Server check failed: HTTP {info_response.status_code}")
+            print(f"   Will use local models if available")
     except requests.exceptions.Timeout:
-        print(f"   ⚠️  Server check/download timed out (will use local models)")
+        print(f"   ⚠️  Server check timed out (will use local models)")
     except Exception as e:
+        import traceback
         print(f"   ⚠️  Server check failed: {e}")
-        print("   Will use local models")
+        print(f"   Traceback: {traceback.format_exc()}")
+        print("   Will use local models if available")
     
     # FALLBACK: Check local files (fast, no network dependency)
     print("🔍 Checking local model files...")
