@@ -49,6 +49,8 @@ CLASS_NAMES = []
 session = None
 input_details = None
 output_details = None
+MODEL_VERSION = None  # Store model version from server
+MODEL_ACCURACY = None  # Store model accuracy from server
 
 # Detection thresholds (configurable via environment variables)
 DETECTION_CONF_THRESHOLD = float(os.getenv('DETECTION_CONF_THRESHOLD', '0.25'))  # Base confidence threshold (25%)
@@ -136,9 +138,17 @@ def find_onnx_model() -> str:
                                 if downloaded % (1024 * 1024) == 0:  # Print every MB
                                     print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)", end='\r')
                 
+                model_version = response.headers.get('X-Model-Version', 'N/A')
+                model_accuracy = response.headers.get('X-Model-Accuracy', 'N/A')
+                
                 print(f"\n   ✅ Model downloaded successfully: {downloaded_model_path.name}")
-                print(f"   Version: {response.headers.get('X-Model-Version', 'N/A')}")
-                print(f"   Accuracy: {response.headers.get('X-Model-Accuracy', 'N/A')}%")
+                print(f"   Version: {model_version}")
+                print(f"   Accuracy: {model_accuracy}%")
+                
+                # Store model metadata globally
+                global MODEL_VERSION, MODEL_ACCURACY
+                MODEL_VERSION = model_version
+                MODEL_ACCURACY = model_accuracy
                 
                 return str(downloaded_model_path)
             else:
@@ -184,7 +194,7 @@ if ONNX_AVAILABLE:
         ONNX_MODEL_PATH = find_onnx_model()
         print(f"🔍 Found model at: {ONNX_MODEL_PATH}")
         
-        # Try to get class names from server
+        # Try to get class names and model metadata from server
         try:
             web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
             model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
@@ -194,6 +204,14 @@ if ONNX_AVAILABLE:
                 if 'classes' in model_info and model_info['classes']:
                     CLASS_NAMES = model_info['classes']
                     print(f"📋 Loaded class names from server: {CLASS_NAMES}")
+                
+                # Store model metadata
+                global MODEL_VERSION, MODEL_ACCURACY
+                if 'version' in model_info:
+                    MODEL_VERSION = model_info['version']
+                if 'accuracy' in model_info:
+                    MODEL_ACCURACY = model_info['accuracy']
+                    print(f"📊 Model accuracy: {MODEL_ACCURACY}%")
         except Exception as e:
             print(f"⚠️  Could not load class names from server: {e}")
             print("   Using default class names")
@@ -444,12 +462,20 @@ def health() -> Any:
         api_error = f"PHP API unreachable: {str(e)}"
         print(f"PHP API connection error: {api_error}")
     
+    detection_info = {
+        "status": "ok" if detection_ok else "error",
+        "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
+    }
+    
+    # Add model metadata if available
+    if MODEL_VERSION:
+        detection_info["model_version"] = MODEL_VERSION
+    if MODEL_ACCURACY:
+        detection_info["model_accuracy"] = float(MODEL_ACCURACY)
+    
     return jsonify({
         "status": "ok" if detection_ok and api_ok else "partial",
-        "detection": {
-            "status": "ok" if detection_ok else "error",
-            "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
-        },
+        "detection": detection_info,
         "training": {
             "status": "ok" if api_ok else "error",
             "database": "connected" if api_ok else "disconnected",
@@ -913,7 +939,7 @@ def detect() -> Any:
             "detected_as": "No Pest Detected"
         })
     
-    return jsonify({
+    response_data = {
         "status": "success",
         "pest_counts": counts,
         "verified_pests": verified_pests,
