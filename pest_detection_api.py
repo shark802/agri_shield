@@ -291,7 +291,7 @@ if ONNX_AVAILABLE:
                     CLASS_NAMES[:] = model_info['classes']  # Update list in place
                     print(f"📋 Loaded class names from server: {CLASS_NAMES}")
                 
-                # Store model metadata (these are module-level variables, no global needed)
+                # Store model metadata
                 global MODEL_VERSION, MODEL_ACCURACY
                 if 'version' in model_info:
                     MODEL_VERSION = model_info['version']
