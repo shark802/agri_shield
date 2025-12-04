@@ -292,11 +292,12 @@ if ONNX_AVAILABLE:
                     print(f"📋 Loaded class names from server: {CLASS_NAMES}")
                 
                 # Store model metadata (these are module-level variables, no global needed)
+                global MODEL_VERSION, MODEL_ACCURACY
                 if 'version' in model_info:
                     MODEL_VERSION = model_info['version']
                 if 'accuracy' in model_info:
-                    MODEL_ACCURACY = model_info['accuracy']
-                    print(f"📊 Model accuracy: {MODEL_ACCURACY}%")
+                    MODEL_ACCURACY = float(model_info['accuracy'])  # Convert to float
+                    print(f"📊 Model version: {MODEL_VERSION}, accuracy: {MODEL_ACCURACY*100:.1f}%")
         except Exception as e:
             # Don't fail app startup if this fails - just use defaults
             print(f"⚠️  Could not load class names from server: {e}")
