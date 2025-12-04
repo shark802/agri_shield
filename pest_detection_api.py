@@ -129,6 +129,12 @@ def find_onnx_model() -> str:
                 file_size = downloaded_model_path.stat().st_size / (1024 * 1024)  # Size in MB
                 print(f"   ✅ Model downloaded: {model_version} (accuracy: {model_accuracy}%) - {file_size:.2f} MB")
                 
+                # Copy to best 2.onnx to replace the old default model
+                best2_path = models_dir / "best 2.onnx"
+                import shutil
+                shutil.copy2(downloaded_model_path, best2_path)
+                print(f"   📋 Copied latest model to best 2.onnx (replacing old default)")
+                
                 # Store model metadata globally
                 global MODEL_VERSION, MODEL_ACCURACY
                 MODEL_VERSION = model_version if model_version != 'N/A' else None
