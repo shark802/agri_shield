@@ -57,7 +57,9 @@ class ClassificationDataset(torch.utils.data.Dataset):
         # Load images
         for class_name, class_idx in self.class_to_idx.items():
             class_dir = self.data_dir / class_name
-            for img_file in class_dir.glob('*.jpg') + class_dir.glob('*.jpeg') + class_dir.glob('*.png'):
+            # Collect all image files (glob returns iterators, so convert to list)
+            image_files = list(class_dir.glob('*.jpg')) + list(class_dir.glob('*.jpeg')) + list(class_dir.glob('*.png'))
+            for img_file in image_files:
                 self.images.append(str(img_file))
                 self.labels.append(class_idx)
         
