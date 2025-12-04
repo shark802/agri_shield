@@ -639,11 +639,34 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
     # Handle different output shapes
     if len(output_data.shape) == 3:
         # Shape could be [batch, features, num_detections] or [batch, num_detections, features]
+        # OR classification: [batch, classes, spatial] like [1, 9, 5376]
         output_data = output_data[0]  # Remove batch dimension
         
-        # Check if it's [features, num_detections] format (transpose needed)
-        # YOLO models often output [batch, features, num_detections]
-        # With shape [9, 5376], 9 is likely features, 5376 is num_detections
+        # Check if it's classification format: [classes, spatial_locations]
+        # For ResNet18 classification, if first dim matches num_classes, it's classification
+        if output_data.shape[0] == len(CLASS_NAMES) and output_data.shape[0] < 20:
+            # Classification model: [classes, spatial] -> average over spatial dims
+            print(f"🔍 Classification model detected: shape {output_data.shape} (classes={output_data.shape[0]})")
+            class_probs = np.mean(output_data, axis=1)  # Average over spatial dimension
+            max_class = int(np.argmax(class_probs))
+            max_conf = float(np.max(class_probs))
+            
+            all_probs = {CLASS_NAMES[i]: float(class_probs[i]) for i in range(len(CLASS_NAMES))}
+            print(f"🔍 All class probabilities: {all_probs}")
+            print(f"🔍 Max: class={max_class} ({CLASS_NAMES[max_class] if max_class < len(CLASS_NAMES) else 'unknown'}), confidence={max_conf:.4f}, threshold={conf_threshold}")
+            
+            min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)
+            second_max_conf = float(np.partition(class_probs, -2)[-2]) if len(class_probs) > 1 else 0
+            confidence_gap = max_conf - second_max_conf
+            
+            if max_conf >= min_conf_threshold and confidence_gap >= CONFIDENCE_GAP_REQUIREMENT and 0 <= max_class < len(CLASS_NAMES):
+                counts[CLASS_NAMES[max_class]] = 1
+                print(f"✅ Detection accepted: {CLASS_NAMES[max_class]} (conf={max_conf:.4f}, gap={confidence_gap:.4f})")
+            else:
+                print(f"⚠️  Detection rejected: conf={max_conf:.4f} < {min_conf_threshold:.4f} or gap={confidence_gap:.4f} < {CONFIDENCE_GAP_REQUIREMENT}")
+            return counts
+        
+        # Check if it's [features, num_detections] format (YOLO - transpose needed)
         if output_data.shape[0] < output_data.shape[1] and output_data.shape[0] <= 20:
             # Likely [features, num_detections] - transpose to [num_detections, features]
             print(f"🔍 Transposing output from {output_data.shape} to {output_data.T.shape} (detected [features, detections] format)")
@@ -927,11 +950,13 @@ def detect() -> Any:
     if input_details.shape:
         input_shape = input_details.shape
     else:
-        # Try to detect model type from path
-        if ONNX_MODEL_PATH and ('yolo' in ONNX_MODEL_PATH.lower() or 'job_' in ONNX_MODEL_PATH):
+        # Try to detect model type from path or output shape
+        # Classification models typically have output shape [1, num_classes] or [1, num_classes, 1, 1]
+        # YOLO models have output shape [1, features, detections] or [1, detections, features]
+        if ONNX_MODEL_PATH and ('yolo' in ONNX_MODEL_PATH.lower()):
             input_shape = [1, 3, 640, 640]  # YOLO standard
         else:
-            input_shape = [1, 3, 512, 512]  # Classification default
+            input_shape = [1, 3, 512, 512]  # Classification default (ResNet18 uses 224x224, but we'll resize)
     
     input_data = preprocess_image(img, tuple(input_shape))
     
