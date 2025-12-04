@@ -207,10 +207,9 @@ if ONNX_AVAILABLE:
                 
                 # Store model metadata
                 global MODEL_VERSION, MODEL_ACCURACY
-                if 'version' in model_info:
-                    MODEL_VERSION = model_info['version']
-                if 'accuracy' in model_info:
-                    MODEL_ACCURACY = model_info['accuracy']
+                MODEL_VERSION = model_info.get('version')
+                MODEL_ACCURACY = model_info.get('accuracy')
+                if MODEL_ACCURACY:
                     print(f"📊 Model accuracy: {MODEL_ACCURACY}%")
         except Exception as e:
             print(f"⚠️  Could not load class names from server: {e}")
