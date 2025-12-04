@@ -10,6 +10,8 @@ import os
 import subprocess
 import threading
 from datetime import datetime
+from pathlib import Path
+import shutil
 
 app = Flask(__name__)
 
@@ -147,6 +149,7 @@ def root():
         'endpoints': {
             'health': '/health',
             'train': '/train (POST)',
+            'train_classification': '/train/classification (POST)',
             'status': '/status/<job_id> (GET)'
         }
     })
@@ -214,6 +217,225 @@ def get_status(job_id):
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+def run_classification_training(dataset_path, save_dir, epochs, batch_size, img_size, model_name, num_classes):
+    """Run ResNet18 classification training via subprocess"""
+    try:
+        # Create training script path
+        script_dir = Path(__file__).resolve().parent
+        train_script = script_dir / 'train_classification.py'
+        
+        # If dedicated script doesn't exist, use main train.py with modified approach
+        if not train_script.exists():
+            train_script = script_dir / 'train.py'
+        
+        # Build command
+        cmd = [
+            'python', str(train_script),
+            '--dataset_path', str(dataset_path),
+            '--save_dir', str(save_dir),
+            '--epochs', str(epochs),
+            '--batch_size', str(batch_size),
+            '--img_size', str(img_size),
+            '--model', model_name,
+            '--num_classes', str(num_classes)
+        ]
+        
+        # Run training
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=7200,  # 2 hour timeout
+            cwd=str(script_dir)
+        )
+        
+        return result.returncode == 0, result.stdout, result.stderr
+        
+    except subprocess.TimeoutExpired:
+        return False, '', 'Training timeout (exceeded 2 hours)'
+    except Exception as e:
+        return False, '', str(e)
+
+@app.route('/train/classification', methods=['POST'])
+def train_classification():
+    """
+    Train ResNet18 classification model
+    
+    Expected JSON:
+    {
+        "dataset_path": "/path/to/dataset",  # Required
+        "epochs": 50,                        # Optional, default 50
+        "batch": 16,                         # Optional, default 16
+        "img_size": 224,                     # Optional, default 224
+        "model": "resnet18",                 # Optional, default "resnet18"
+        "num_classes": 5                      # Required
+    }
+    """
+    try:
+        data = request.json or {}
+        
+        # Validate required parameters
+        dataset_path = data.get('dataset_path')
+        if not dataset_path:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required parameter: dataset_path'
+            }), 400
+        
+        num_classes = data.get('num_classes')
+        if num_classes is None:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required parameter: num_classes'
+            }), 400
+        
+        # Get optional parameters with defaults
+        epochs = data.get('epochs', 50)
+        batch_size = data.get('batch', 16)
+        img_size = data.get('img_size', 224)
+        model_name = data.get('model', 'resnet18')
+        
+        # Validate dataset path exists
+        dataset_path_obj = Path(dataset_path)
+        if not dataset_path_obj.exists():
+            return jsonify({
+                'success': False,
+                'error': f'Dataset path does not exist: {dataset_path}'
+            }), 400
+        
+        if not dataset_path_obj.is_dir():
+            return jsonify({
+                'success': False,
+                'error': f'Dataset path is not a directory: {dataset_path}'
+            }), 400
+        
+        # Verify required folders exist
+        train_dir = dataset_path_obj / 'train'
+        valid_dir = dataset_path_obj / 'valid'
+        test_dir = dataset_path_obj / 'test'
+        
+        # Check for valid/val naming variation
+        if not valid_dir.exists():
+            val_dir = dataset_path_obj / 'val'
+            if val_dir.exists():
+                valid_dir = val_dir
+        
+        missing_folders = []
+        if not train_dir.exists():
+            missing_folders.append('train/')
+        if not valid_dir.exists():
+            missing_folders.append('valid/ or val/')
+        
+        if missing_folders:
+            return jsonify({
+                'success': False,
+                'error': f'Missing required folders: {", ".join(missing_folders)}',
+                'dataset_path': str(dataset_path),
+                'checked': {
+                    'train': train_dir.exists(),
+                    'valid': valid_dir.exists(),
+                    'test': test_dir.exists()
+                }
+            }), 400
+        
+        # Create timestamped save directory
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        script_dir = Path(__file__).resolve().parent
+        runs_dir = script_dir / 'runs' / 'classification'
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        
+        save_dir = runs_dir / f'train_{timestamp}'
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Validate parameters
+        if epochs < 1:
+            return jsonify({
+                'success': False,
+                'error': 'epochs must be >= 1'
+            }), 400
+        
+        if batch_size < 1:
+            return jsonify({
+                'success': False,
+                'error': 'batch must be >= 1'
+            }), 400
+        
+        if num_classes < 1:
+            return jsonify({
+                'success': False,
+                'error': 'num_classes must be >= 1'
+            }), 400
+        
+        if model_name not in ['resnet18', 'resnet34', 'resnet50']:
+            return jsonify({
+                'success': False,
+                'error': f'Unsupported model: {model_name}. Supported: resnet18, resnet34, resnet50'
+            }), 400
+        
+        # Start training in background thread
+        def training_worker():
+            try:
+                success, stdout, stderr = run_classification_training(
+                    dataset_path_obj,
+                    save_dir,
+                    epochs,
+                    batch_size,
+                    img_size,
+                    model_name,
+                    num_classes
+                )
+                
+                # Save training output
+                output_file = save_dir / 'training_output.txt'
+                with open(output_file, 'w') as f:
+                    f.write("=== STDOUT ===\n")
+                    f.write(stdout)
+                    f.write("\n\n=== STDERR ===\n")
+                    f.write(stderr)
+                
+                if not success:
+                    error_file = save_dir / 'error.txt'
+                    with open(error_file, 'w') as f:
+                        f.write(stderr or stdout or 'Unknown error')
+                
+            except Exception as e:
+                error_file = save_dir / 'error.txt'
+                with open(error_file, 'w') as f:
+                    f.write(f'Training error: {str(e)}')
+        
+        thread = threading.Thread(target=training_worker)
+        thread.daemon = True
+        thread.start()
+        
+        # Return immediate response
+        return jsonify({
+            'success': True,
+            'message': 'Classification training started',
+            'training_status': 'running',
+            'save_directory': str(save_dir),
+            'parameters': {
+                'dataset_path': str(dataset_path),
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'img_size': img_size,
+                'model': model_name,
+                'num_classes': num_classes
+            },
+            'dataset_structure': {
+                'train': train_dir.exists(),
+                'valid': valid_dir.exists(),
+                'test': test_dir.exists()
+            }
+        }), 200
+        
+    except Exception as e:
+        error_msg = str(e)
+        return jsonify({
+            'success': False,
+            'error': 'Failed to start training',
+            'message': error_msg
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
