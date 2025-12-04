@@ -1076,26 +1076,42 @@ def download_dataset_from_server(script_dir, logger):
                     else:
                         print(f"[INFO] ZIP root structure: {root_folder}/", flush=True)
                     
-                    # If ZIP has 'dataset_organized' as root, extract to parent and let it create the folder
-                    if root_folder == 'dataset_organized' or 'dataset' in root_folder.lower():
-                        training_data_dir = script_dir / "training_data"
-                        training_data_dir.mkdir(parents=True, exist_ok=True)
-                        zip_ref.extractall(training_data_dir)
-                        print(f"[INFO] Extracted to {training_data_dir}, dataset should be at {organized_dir}", flush=True)
-                        # Update organized_dir to point to the extracted location
-                        organized_dir = training_data_dir / root_folder
-                        print(f"[INFO] Updated organized_dir to: {organized_dir}", flush=True)
-                    # Check if root is 100.v1i.folder or classification directly
-                    elif root_folder == '100.v1i.folder' or root_folder == 'classification':
-                        # Extract to organized_dir, but files will be at root level
-                        zip_ref.extractall(organized_dir)
-                        print(f"[INFO] Extracted {root_folder} directly to {organized_dir}", flush=True)
+                    # Check for manifest.json first (new standardized approach)
+                    manifest_path = None
+                    for path in file_list:
+                        if 'manifest.json' in path:
+                            manifest_path = path
+                            break
+                    
+                    # Always extract to training_data directory first
+                    training_data_dir = script_dir / "training_data"
+                    training_data_dir.mkdir(parents=True, exist_ok=True)
+                    zip_ref.extractall(training_data_dir)
+                    print(f"[INFO] Extracted ZIP to {training_data_dir}", flush=True)
+                    
+                    # Read manifest if available (new standardized approach)
+                    if manifest_path:
+                        manifest_file = training_data_dir / manifest_path
+                        if manifest_file.exists():
+                            try:
+                                import json
+                                with open(manifest_file, 'r') as f:
+                                    manifest = json.load(f)
+                                print(f"[OK] Found manifest.json: format={manifest.get('format')}, root={manifest.get('root_folder')}", flush=True)
+                                root_folder = manifest.get('root_folder', 'dataset_organized')
+                                organized_dir = training_data_dir / root_folder
+                                print(f"[INFO] Using manifest to locate dataset at: {organized_dir}", flush=True)
+                            except Exception as e:
+                                print(f"[WARN] Could not read manifest: {e}, using auto-detected root", flush=True)
+                                organized_dir = training_data_dir / root_folder
+                        else:
+                            organized_dir = training_data_dir / root_folder
                     else:
-                        # Extract directly to organized_dir
-                        zip_ref.extractall(organized_dir)
-                        print(f"[INFO] Extracted directly to {organized_dir}", flush=True)
+                        # No manifest - use detected root folder
+                        organized_dir = training_data_dir / root_folder
+                        print(f"[INFO] No manifest found, using auto-detected root: {root_folder}", flush=True)
                 else:
-                    # Files are at root of ZIP, extract directly to organized_dir
+                    # Files are at root of ZIP - extract to organized_dir
                     zip_ref.extractall(organized_dir)
                     print(f"[INFO] Extracted root files to {organized_dir}", flush=True)
             else:
