@@ -76,6 +76,14 @@ def find_onnx_model() -> str:
     if downloaded_model.exists():
         file_size = downloaded_model.stat().st_size / (1024 * 1024)  # Size in MB
         print(f"📦 Found downloaded model: best.onnx ({file_size:.2f} MB)")
+        
+        # Also copy to best 2.onnx to ensure it's up to date
+        best2_path = models_dir / "best 2.onnx"
+        import shutil
+        if not best2_path.exists() or best2_path.stat().st_size != downloaded_model.stat().st_size:
+            shutil.copy2(downloaded_model, best2_path)
+            print(f"   📋 Updated best 2.onnx with latest model")
+        
         # Check server for updates in background (non-blocking)
         _check_server_for_updates_async(base_dir)
         return str(downloaded_model)
@@ -220,6 +228,12 @@ def _check_server_for_updates_async(base_dir: Path):
                                 f.write(chunk)
                     
                     print(f"   ✅ Updated model downloaded: {server_version}")
+                    
+                    # Copy to best 2.onnx to replace the old default model
+                    best2_path = models_dir / "best 2.onnx"
+                    import shutil
+                    shutil.copy2(downloaded_model_path, best2_path)
+                    print(f"   📋 Updated best 2.onnx with latest model")
                     
                     global MODEL_VERSION, MODEL_ACCURACY
                     MODEL_VERSION = server_version
