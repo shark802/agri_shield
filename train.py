@@ -1422,50 +1422,76 @@ def create_combined_dataset(logger):
             
             train_count = 0
             val_count = 0
+            classes_found = []
             
             # Process train folder
             if roboflow_train.exists():
-                for roboflow_class_dir in roboflow_train.iterdir():
+                print(f"[DEBUG] Processing train folder: {roboflow_train}", flush=True)
+                class_dirs = list(roboflow_train.iterdir())
+                print(f"[DEBUG] Found {len(class_dirs)} items in train folder", flush=True)
+                
+                for roboflow_class_dir in class_dirs:
                     if not roboflow_class_dir.is_dir():
+                        print(f"[DEBUG] Skipping non-directory: {roboflow_class_dir.name}", flush=True)
                         continue
                     
                     roboflow_class_name = roboflow_class_dir.name
+                    print(f"[DEBUG] Processing class: '{roboflow_class_name}'", flush=True)
+                    
                     # Map to system class name
                     system_class_name = folder_mappings.get(roboflow_class_name.lower(), roboflow_class_name.lower().replace(' ', '_'))
+                    print(f"[DEBUG] Mapped '{roboflow_class_name}' -> '{system_class_name}'", flush=True)
+                    
+                    if system_class_name not in classes_found:
+                        classes_found.append(system_class_name)
                     
                     # Create system class directory
                     system_train_dir = classification_train_dir / system_class_name
                     system_train_dir.mkdir(exist_ok=True)
                     
                     # Copy images
-                    for img_file in roboflow_class_dir.glob('*'):
-                        if img_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                            dest = system_train_dir / img_file.name
-                            if not dest.exists():
-                                shutil.copy2(img_file, dest)
-                                train_count += 1
+                    image_files = list(roboflow_class_dir.glob('*.jpg')) + list(roboflow_class_dir.glob('*.jpeg')) + list(roboflow_class_dir.glob('*.png'))
+                    print(f"[DEBUG] Found {len(image_files)} images in '{roboflow_class_name}'", flush=True)
+                    
+                    for img_file in image_files:
+                        dest = system_train_dir / img_file.name
+                        if not dest.exists():
+                            shutil.copy2(img_file, dest)
+                            train_count += 1
             
             # Process valid folder
             if roboflow_valid.exists():
-                for roboflow_class_dir in roboflow_valid.iterdir():
+                print(f"[DEBUG] Processing valid folder: {roboflow_valid}", flush=True)
+                class_dirs = list(roboflow_valid.iterdir())
+                print(f"[DEBUG] Found {len(class_dirs)} items in valid folder", flush=True)
+                
+                for roboflow_class_dir in class_dirs:
                     if not roboflow_class_dir.is_dir():
+                        print(f"[DEBUG] Skipping non-directory: {roboflow_class_dir.name}", flush=True)
                         continue
                     
                     roboflow_class_name = roboflow_class_dir.name
+                    print(f"[DEBUG] Processing class: '{roboflow_class_name}'", flush=True)
+                    
                     # Map to system class name
                     system_class_name = folder_mappings.get(roboflow_class_name.lower(), roboflow_class_name.lower().replace(' ', '_'))
+                    print(f"[DEBUG] Mapped '{roboflow_class_name}' -> '{system_class_name}'", flush=True)
                     
                     # Create system class directory
                     system_val_dir = classification_val_dir / system_class_name
                     system_val_dir.mkdir(exist_ok=True)
                     
                     # Copy images
-                    for img_file in roboflow_class_dir.glob('*'):
-                        if img_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                            dest = system_val_dir / img_file.name
-                            if not dest.exists():
-                                shutil.copy2(img_file, dest)
-                                val_count += 1
+                    image_files = list(roboflow_class_dir.glob('*.jpg')) + list(roboflow_class_dir.glob('*.jpeg')) + list(roboflow_class_dir.glob('*.png'))
+                    print(f"[DEBUG] Found {len(image_files)} images in '{roboflow_class_name}'", flush=True)
+                    
+                    for img_file in image_files:
+                        dest = system_val_dir / img_file.name
+                        if not dest.exists():
+                            shutil.copy2(img_file, dest)
+                            val_count += 1
+            
+            print(f"[DEBUG] Classes found during conversion: {classes_found}", flush=True)
             
             if train_count > 0 or val_count > 0:
                 print(f"[OK] Converted 100.v1i.folder to classification format: {train_count} train, {val_count} val", flush=True)
