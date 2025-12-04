@@ -212,6 +212,19 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     
+    # Handle different dataset structures
+    # Check for 100.v1i.folder structure first
+    roboflow_dir = dataset_path / '100.v1i.folder'
+    if roboflow_dir.exists() and roboflow_dir.is_dir():
+        print(f"Found 100.v1i.folder structure, using it...", flush=True)
+        dataset_path = roboflow_dir
+    
+    # Check for classification structure
+    classification_dir = dataset_path / 'classification'
+    if classification_dir.exists() and classification_dir.is_dir():
+        print(f"Found classification structure, using it...", flush=True)
+        dataset_path = classification_dir
+    
     # Check for train and valid folders
     train_dir = dataset_path / 'train'
     valid_dir = dataset_path / 'valid'
@@ -220,10 +233,19 @@ def main():
     
     if not train_dir.exists():
         print(f"ERROR: train/ folder not found in {dataset_path}", flush=True)
+        print(f"Checked paths:", flush=True)
+        print(f"  - {dataset_path / 'train'}", flush=True)
+        print(f"  - {dataset_path / '100.v1i.folder' / 'train'}", flush=True)
+        print(f"  - {dataset_path / 'classification' / 'train'}", flush=True)
         sys.exit(1)
     
     if not valid_dir.exists():
         print(f"ERROR: valid/ or val/ folder not found in {dataset_path}", flush=True)
+        print(f"Checked paths:", flush=True)
+        print(f"  - {dataset_path / 'valid'}", flush=True)
+        print(f"  - {dataset_path / 'val'}", flush=True)
+        print(f"  - {dataset_path / '100.v1i.folder' / 'valid'}", flush=True)
+        print(f"  - {dataset_path / 'classification' / 'val'}", flush=True)
         sys.exit(1)
     
     print(f"Dataset path: {dataset_path}", flush=True)
@@ -244,8 +266,18 @@ def main():
     
     # Load datasets
     print("\nLoading datasets...", flush=True)
+    print(f"Dataset base path: {dataset_path}", flush=True)
+    print(f"Train directory: {train_dir}", flush=True)
+    print(f"Valid directory: {valid_dir}", flush=True)
+    
+    # For train, use dataset_path directly (it already points to the right location)
     train_dataset = ClassificationDataset(dataset_path, transform=train_transform, split='train')
-    val_dataset = ClassificationDataset(valid_dir.parent, transform=val_transform, split=valid_dir.name)
+    
+    # For validation, use the parent directory and the split name
+    # If valid_dir is dataset_path/valid, then split='valid'
+    # If valid_dir is dataset_path/val, then split='val'
+    val_split_name = valid_dir.name  # 'valid' or 'val'
+    val_dataset = ClassificationDataset(dataset_path, transform=val_transform, split=val_split_name)
     
     # Verify number of classes matches
     actual_num_classes = len(train_dataset.classes)

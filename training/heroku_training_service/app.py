@@ -310,6 +310,17 @@ def train_classification():
                 'error': f'Dataset path is not a directory: {dataset_path}'
             }), 400
         
+        # Handle different dataset structures
+        # Check for 100.v1i.folder structure first
+        roboflow_dir = dataset_path_obj / '100.v1i.folder'
+        if roboflow_dir.exists() and roboflow_dir.is_dir():
+            dataset_path_obj = roboflow_dir
+        
+        # Check for classification structure
+        classification_dir = dataset_path_obj / 'classification'
+        if classification_dir.exists() and classification_dir.is_dir():
+            dataset_path_obj = classification_dir
+        
         # Verify required folders exist
         train_dir = dataset_path_obj / 'train'
         valid_dir = dataset_path_obj / 'valid'
@@ -332,11 +343,13 @@ def train_classification():
                 'success': False,
                 'error': f'Missing required folders: {", ".join(missing_folders)}',
                 'dataset_path': str(dataset_path),
+                'resolved_path': str(dataset_path_obj),
                 'checked': {
                     'train': train_dir.exists(),
                     'valid': valid_dir.exists(),
                     'test': test_dir.exists()
-                }
+                },
+                'hint': 'Dataset should have train/ and valid/ (or val/) folders. If using 100.v1i.folder structure, ensure it contains train/ and valid/ subfolders.'
             }), 400
         
         # Create timestamped save directory
@@ -376,8 +389,9 @@ def train_classification():
         # Start training in background thread
         def training_worker():
             try:
+                # Pass the resolved dataset path (which may be inside 100.v1i.folder or classification)
                 success, stdout, stderr = run_classification_training(
-                    dataset_path_obj,
+                    dataset_path_obj,  # This is already resolved to the correct path
                     save_dir,
                     epochs,
                     batch_size,
@@ -416,6 +430,7 @@ def train_classification():
             'save_directory': str(save_dir),
             'parameters': {
                 'dataset_path': str(dataset_path),
+                'resolved_path': str(dataset_path_obj),
                 'epochs': epochs,
                 'batch_size': batch_size,
                 'img_size': img_size,
@@ -426,7 +441,8 @@ def train_classification():
                 'train': train_dir.exists(),
                 'valid': valid_dir.exists(),
                 'test': test_dir.exists()
-            }
+            },
+            'note': 'If dataset_path contains 100.v1i.folder or classification, it will be automatically resolved'
         }), 200
         
     except Exception as e:
