@@ -102,20 +102,57 @@ def find_onnx_model() -> str:
                 print(f"📦 Found trained model in {job_dir.name}: {onnx_files[0].name}")
                 return str(onnx_files[0])
     
-    # If still not found and we're on Heroku, try to get active model from web server
+    # If still not found and we're on Heroku, try to download active model from web server
     # (Models are uploaded to web server during training, but Heroku needs local copy)
-    php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
-    try:
-        import requests
-        # Try to get active model info from database via PHP API
-        # For now, just raise error - model should be uploaded to Heroku during training
-        pass
-    except:
-        pass
+    if not any(c.exists() for c in candidates):
+        print("📥 No local model found, attempting to download active model from server...")
+        try:
+            # Get web server URL from environment or use default
+            web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
+            download_url = f"{web_server_url}/api/training/get_active_model.php"
+            
+            print(f"   Downloading from: {download_url}")
+            
+            response = requests.get(download_url, timeout=120, stream=True)
+            
+            if response.status_code == 200:
+                # Save to models directory
+                models_dir = base_dir / "models"
+                models_dir.mkdir(exist_ok=True)
+                
+                downloaded_model_path = models_dir / "best.onnx"
+                
+                # Download with progress
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                with open(downloaded_model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                progress = (downloaded / total_size) * 100
+                                if downloaded % (1024 * 1024) == 0:  # Print every MB
+                                    print(f"   Downloaded: {downloaded / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB ({progress:.1f}%)", end='\r')
+                
+                print(f"\n   ✅ Model downloaded successfully: {downloaded_model_path.name}")
+                print(f"   Version: {response.headers.get('X-Model-Version', 'N/A')}")
+                print(f"   Accuracy: {response.headers.get('X-Model-Accuracy', 'N/A')}%")
+                
+                return str(downloaded_model_path)
+            else:
+                print(f"   ⚠️  Failed to download model: HTTP {response.status_code}")
+                if response.status_code == 404:
+                    print("   No active model found on server. Please train a model first.")
+        except Exception as e:
+            print(f"   ⚠️  Error downloading model: {e}")
+            print("   Will try to use local models if available.")
     
+    # If still not found, raise error
     raise FileNotFoundError(
         f"ONNX model not found. Checked: {[str(c) for c in candidates]} and job directories. "
-        f"Note: On Heroku, models must be uploaded during training or placed in models/ directory."
+        f"Note: On Heroku, models are automatically downloaded from server if no local model exists."
     )
 
 def load_onnx_model(model_path: str):
@@ -141,11 +178,26 @@ def load_onnx_model(model_path: str):
     
     return sess, input_details, output_details
 
-# Initialize model
+# Initialize model (with automatic download from server if needed)
 if ONNX_AVAILABLE:
     try:
         ONNX_MODEL_PATH = find_onnx_model()
         print(f"🔍 Found model at: {ONNX_MODEL_PATH}")
+        
+        # Try to get class names from server
+        try:
+            web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
+            model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
+            info_response = requests.get(model_info_url, timeout=10)
+            if info_response.status_code == 200:
+                model_info = info_response.json()
+                if 'classes' in model_info and model_info['classes']:
+                    CLASS_NAMES = model_info['classes']
+                    print(f"📋 Loaded class names from server: {CLASS_NAMES}")
+        except Exception as e:
+            print(f"⚠️  Could not load class names from server: {e}")
+            print("   Using default class names")
+        
         session, input_details, output_details = load_onnx_model(ONNX_MODEL_PATH)
         
         # Default class names (update based on your model)
@@ -352,7 +404,7 @@ def index() -> Any:
         "version": "1.0.0",
         "services": {
             "detection": {
-                "framework": "ONNX Runtime",
+        "framework": "ONNX Runtime",
                 "status": "running" if ONNX_AVAILABLE and session else "error",
                 "model_loaded": session is not None,
                 "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none"
