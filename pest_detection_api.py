@@ -282,6 +282,7 @@ if ONNX_AVAILABLE:
         
         # Try to get class names and model metadata from server (optional - don't fail if this fails)
         try:
+            global MODEL_VERSION, MODEL_ACCURACY
             web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
             model_info_url = f"{web_server_url}/api/training/get_active_model_info.php"
             info_response = requests.get(model_info_url, timeout=5)  # Shorter timeout
@@ -292,7 +293,6 @@ if ONNX_AVAILABLE:
                     print(f"📋 Loaded class names from server: {CLASS_NAMES}")
                 
                 # Store model metadata
-                global MODEL_VERSION, MODEL_ACCURACY
                 if 'version' in model_info:
                     MODEL_VERSION = model_info['version']
                 if 'accuracy' in model_info:
