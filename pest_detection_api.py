@@ -147,8 +147,8 @@ def find_onnx_model() -> str:
                 
                 # Store model metadata globally
                 global MODEL_VERSION, MODEL_ACCURACY
-                MODEL_VERSION = model_version
-                MODEL_ACCURACY = model_accuracy
+                MODEL_VERSION = model_version if model_version != 'N/A' else None
+                MODEL_ACCURACY = model_accuracy if model_accuracy != 'N/A' else None
                 
                 return str(downloaded_model_path)
             else:
