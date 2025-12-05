@@ -680,6 +680,24 @@ class ModelTrainer:
             self.logger.error(f"Failed to read model file: {e}")
             return False
         
+        # Get farm_id from training job (if available)
+        farm_id = 0
+        try:
+            # Try to get farm_id from training_jobs table via PHP API
+            php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
+            job_info_url = f"{php_api_base}/get_training_job_info.php"
+            job_response = requests.get(f"{job_info_url}?job_id={self.job_id}", timeout=5)
+            if job_response.status_code == 200:
+                job_info = job_response.json()
+                if job_info.get('success') and job_info.get('farm_parcels_id'):
+                    farm_id = int(job_info.get('farm_parcels_id', 0))
+                    if farm_id > 0:
+                        self.logger.info(f"Found farm_id from training job: {farm_id}")
+                        print(f"[INFO] Training for farm_id: {farm_id}", flush=True)
+        except Exception as e:
+            # Silently fail - farm_id will be retrieved by upload_model.php from database
+            pass
+        
         # Prepare upload data - use files parameter for multipart upload
         # This is more efficient than base64 encoding in JSON
         upload_data = {
@@ -688,6 +706,10 @@ class ModelTrainer:
             'model_type': model_type,
             'model_size_mb': str(model_size_mb)
         }
+        
+        # Add farm_id if available
+        if farm_id > 0:
+            upload_data['farm_id'] = str(farm_id)
         
         # Prepare file for multipart upload
         files = {

@@ -922,7 +922,7 @@ def _old_detection_processing():
 
 @app.post("/detect")
 def detect() -> Any:
-    """Pest detection endpoint using ONNX Runtime"""
+    """Pest detection endpoint using ONNX Runtime - supports farm/device-specific models"""
     if not ONNX_AVAILABLE or session is None:
         return jsonify({
             "error": "ONNX model not available",
@@ -935,6 +935,46 @@ def detect() -> Any:
     file = request.files["image"]
     if file.filename == "":
         return jsonify({"error": "empty filename"}), 400
+    
+    # Get farm_id or device_id from form data (optional - for farm-specific models)
+    farm_id = request.form.get('farm_id') or request.form.get('farm_parcels_id')
+    device_id = request.form.get('device_id')
+    
+    # If device_id provided, try to get farm-specific model
+    if device_id or farm_id:
+        try:
+            web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
+            model_url = f"{web_server_url}/api/training/get_model_file_for_farm.php"
+            
+            params = {}
+            if farm_id:
+                params['farm_parcels_id'] = farm_id
+            if device_id:
+                params['device_id'] = device_id
+            
+            # Try to download farm-specific model
+            response = requests.get(model_url, params=params, timeout=180, stream=True)
+            if response.status_code == 200:
+                models_dir = Path(__file__).resolve().parent / "models"
+                models_dir.mkdir(exist_ok=True)
+                
+                # Save as farm-specific model file
+                farm_model_path = models_dir / f"farm_{farm_id or device_id}.onnx"
+                with open(farm_model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                # Load the farm-specific model
+                global session, input_details, output_details, ONNX_MODEL_PATH, MODEL_VERSION, MODEL_ACCURACY
+                session, input_details, output_details = load_onnx_model(str(farm_model_path))
+                ONNX_MODEL_PATH = str(farm_model_path)
+                MODEL_VERSION = response.headers.get('X-Model-Version', 'N/A')
+                MODEL_ACCURACY = response.headers.get('X-Model-Accuracy', 'N/A')
+                print(f"✅ Loaded farm-specific model: {MODEL_VERSION} (accuracy: {MODEL_ACCURACY}%)")
+        except Exception as e:
+            print(f"⚠️  Could not load farm-specific model ({e}), using default model")
+            # Continue with default model
     
     try:
         image_bytes = file.read()
