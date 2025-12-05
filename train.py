@@ -1034,8 +1034,11 @@ def download_dataset_from_server(script_dir, logger, job_id=None, farm_id=None, 
         if farm_id and farm_id > 0:
             url_params.append(f"farm_id={farm_id}")
         if selected_pests and isinstance(selected_pests, list) and len(selected_pests) > 0:
-            import json
-            url_params.append(f"selected_pests={json.dumps(selected_pests)}")
+            # URL encode the JSON string to avoid issues with special characters
+            import urllib.parse
+            pests_json = json.dumps(selected_pests)
+            pests_encoded = urllib.parse.quote(pests_json)
+            url_params.append(f"selected_pests={pests_encoded}")
         
         if url_params:
             download_url += "&" + "&".join(url_params)
