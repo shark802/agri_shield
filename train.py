@@ -983,7 +983,7 @@ def load_classes_from_yaml(yaml_path):
         print(f"Warning: Could not load classes from {yaml_path}: {e}", flush=True)
         return None
 
-def download_dataset_from_server(script_dir, logger):
+def download_dataset_from_server(script_dir, logger, job_id=None, farm_id=None, selected_pests=None):
     """Download organized dataset from web server if not available locally"""
     try:
         import requests
@@ -1005,6 +1005,42 @@ def download_dataset_from_server(script_dir, logger):
         # Get PHP API base URL
         php_api_base = os.getenv('PHP_API_BASE', 'https://agrishield.bccbsis.com/Proto1/api/training')
         download_url = f"{php_api_base}/download_dataset.php?format=zip"
+        
+        # Add farm_id and selected_pests if provided
+        if job_id:
+            # Try to get farm_id from training job if not provided
+            if not farm_id:
+                try:
+                    job_info_url = f"{php_api_base}/get_training_job_info.php"
+                    job_response = requests.get(f"{job_info_url}?job_id={job_id}", timeout=5)
+                    if job_response.status_code == 200:
+                        job_info = job_response.json()
+                        if job_info.get('success') and job_info.get('farm_parcels_id'):
+                            farm_id = int(job_info.get('farm_parcels_id', 0))
+                            if farm_id > 0:
+                                print(f"[INFO] Found farm_id from training job: {farm_id}", flush=True)
+                                logger.info(f"Found farm_id from training job: {farm_id}")
+                                
+                                # Get selected_pests from training_config if available
+                                training_config = job_info.get('training_config', {})
+                                if isinstance(training_config, dict) and training_config.get('selected_pests'):
+                                    selected_pests = training_config.get('selected_pests')
+                except Exception as e:
+                    print(f"[WARN] Could not get farm_id from job: {e}", flush=True)
+                    pass
+        
+        # Build URL with parameters
+        url_params = []
+        if farm_id and farm_id > 0:
+            url_params.append(f"farm_id={farm_id}")
+        if selected_pests and isinstance(selected_pests, list) and len(selected_pests) > 0:
+            import json
+            url_params.append(f"selected_pests={json.dumps(selected_pests)}")
+        
+        if url_params:
+            download_url += "&" + "&".join(url_params)
+            print(f"[INFO] Downloading farm-specific dataset (farm_id: {farm_id})", flush=True)
+            logger.info(f"Downloading farm-specific dataset (farm_id: {farm_id})")
         
         print(f"[INFO] Downloading dataset from server...", flush=True)
         print(f"  URL: {download_url}", flush=True)
@@ -1270,7 +1306,7 @@ def download_dataset_from_server(script_dir, logger):
         logger.error(f"Error downloading dataset: {e}")
         return False
 
-def create_combined_dataset(logger):
+def create_combined_dataset(logger, job_id=None):
     """Create combined dataset from original and collected data"""
     import sys
     print("Creating combined dataset...", flush=True)
@@ -1317,7 +1353,18 @@ def create_combined_dataset(logger):
         print(f"[INFO] This ensures training uses the latest images from database", flush=True)
         logger.info("Downloading fresh dataset from server")
         
-        download_success = download_dataset_from_server(script_dir, logger)
+        # Get job_id from args if available
+        job_id_for_download = None
+        try:
+            import sys
+            for arg in sys.argv:
+                if arg.startswith('--job_id'):
+                    job_id_for_download = int(arg.split('=')[1] if '=' in arg else sys.argv[sys.argv.index(arg) + 1])
+                    break
+        except:
+            pass
+        
+        download_success = download_dataset_from_server(script_dir, logger, job_id=job_id_for_download)
         if not download_success:
             print("[ERROR] Could not download dataset from server!", flush=True)
             print("[ERROR] Please ensure a dataset is uploaded on the server.", flush=True)
@@ -1824,7 +1871,18 @@ def create_combined_dataset(logger):
                     print(f"[WARN] Could not remove empty dataset directory: {e}", flush=True)
                     logger.warning(f"Could not remove empty dataset directory: {e}")
                 
-                download_success = download_dataset_from_server(script_dir, logger)
+                # Get job_id from args if available
+                job_id_for_download = None
+                try:
+                    import sys
+                    for arg in sys.argv:
+                        if arg.startswith('--job_id'):
+                            job_id_for_download = int(arg.split('=')[1] if '=' in arg else sys.argv[sys.argv.index(arg) + 1])
+                            break
+                except:
+                    pass
+                
+                download_success = download_dataset_from_server(script_dir, logger, job_id=job_id_for_download)
                 if download_success:
                     # Refresh paths after download
                     organized_dir = script_dir / "training_data" / "dataset_organized"
@@ -2001,7 +2059,8 @@ def main():
         try:
             print("Creating dataset...", flush=True)
             sys.stdout.flush()
-            train_dir, val_dir, classes_from_yaml = create_combined_dataset(logger)
+            # Pass job_id to create_combined_dataset so it can pass to download_dataset_from_server
+            train_dir, val_dir, classes_from_yaml = create_combined_dataset(logger, job_id=args.job_id)
             print(f"[OK] Dataset created: Train={train_dir}, Val={val_dir}", flush=True)
             if classes_from_yaml:
                 print(f"[OK] Classes from data.yaml: {len(classes_from_yaml)} classes - {classes_from_yaml}", flush=True)
