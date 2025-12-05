@@ -923,6 +923,8 @@ def _old_detection_processing():
 @app.post("/detect")
 def detect() -> Any:
     """Pest detection endpoint using ONNX Runtime - supports farm/device-specific models"""
+    global session, input_details, output_details, ONNX_MODEL_PATH, MODEL_VERSION, MODEL_ACCURACY
+    
     if not ONNX_AVAILABLE or session is None:
         return jsonify({
             "error": "ONNX model not available",
@@ -966,7 +968,6 @@ def detect() -> Any:
                             f.write(chunk)
                 
                 # Load the farm-specific model
-                global session, input_details, output_details, ONNX_MODEL_PATH, MODEL_VERSION, MODEL_ACCURACY
                 session, input_details, output_details = load_onnx_model(str(farm_model_path))
                 ONNX_MODEL_PATH = str(farm_model_path)
                 MODEL_VERSION = response.headers.get('X-Model-Version', 'N/A')
