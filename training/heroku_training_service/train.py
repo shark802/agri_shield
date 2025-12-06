@@ -25,6 +25,7 @@ import time
 import logging
 import argparse
 import pymysql
+import json as json_lib
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -567,43 +568,167 @@ class ModelTrainer:
         return model
     
     def save_model(self, model, accuracy, classes):
-        """Save model to database and file system - Auto-activates new model"""
+        """Save model to file system AND database
+        
+        During training, models are saved locally and database entry is created/updated.
+        This ensures the model is tracked in the database throughout training.
+        Only the best model (highest accuracy) creates/updates the database entry.
+        """
         try:
             # Create model directory (in parent directory, same as root)
             script_dir = Path(__file__).resolve().parent
             model_dir = script_dir / "models" / f"job_{self.job_id}"
             model_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save model file
+            # Save model file locally
             model_path = model_dir / "best_model.pth"
             torch.save(model.state_dict(), model_path)
             
             # Get model size
             model_size_mb = model_path.stat().st_size / (1024 * 1024)
             
-            # Save to database
-            conn = pymysql.connect(**DB_CONFIG)
-            cursor = conn.cursor()
-            
-            # Generate version number
-            cursor.execute("SELECT MAX(CAST(SUBSTRING(version, 2) AS UNSIGNED)) FROM model_versions")
-            result = cursor.fetchone()
-            next_version = (result[0] or 0) + 1
-            
-            # Deactivate all previous models
-            cursor.execute("UPDATE model_versions SET is_active = 0, is_current = 0")
-            
-            # Insert new model as active
-            cursor.execute(
-                "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, 1, NOW())",
-                (f"v{next_version}", str(model_path), accuracy/100, self.job_id, model_size_mb)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.info(f"[OK] Model v{next_version} saved and automatically activated with accuracy: {accuracy:.2f}%")
-            self.logger.info(f"[INFO] All previous models have been deactivated")
+            # Save to database - create or update entry for this training job
+            try:
+                conn = pymysql.connect(**DB_CONFIG)
+                cursor = conn.cursor()
+                
+                # Check if model already exists for this job_id
+                cursor.execute(
+                    "SELECT model_id FROM model_versions WHERE training_job_id = %s",
+                    (self.job_id,)
+                )
+                existing_model = cursor.fetchone()
+                
+                # Get farm_id from training_jobs table (for farm-specific models)
+                farm_id = None
+                cursor.execute(
+                    "SELECT farm_parcels_id FROM training_jobs WHERE job_id = %s",
+                    (self.job_id,)
+                )
+                job_result = cursor.fetchone()
+                if job_result and job_result[0]:
+                    farm_id = job_result[0]
+                
+                # Prepare classes JSON
+                classes_json = None
+                if classes:
+                    classes_json = json.dumps(list(classes))
+                
+                # Local path (will be updated when uploaded to main server)
+                relative_path = f"models/job_{self.job_id}/best_model.pth"
+                accuracy_decimal = accuracy / 100.0
+                
+                if existing_model:
+                    # Update existing entry (only keep best model per job)
+                    model_id = existing_model[0]
+                    
+                    # Check if this model has better accuracy than existing
+                    cursor.execute(
+                        "SELECT accuracy FROM model_versions WHERE model_id = %s",
+                        (model_id,)
+                    )
+                    existing_acc_result = cursor.fetchone()
+                    existing_accuracy = existing_acc_result[0] if existing_acc_result else 0.0
+                    
+                    # Only update if this accuracy is better
+                    if accuracy_decimal > existing_accuracy:
+                        # Update with classes_json if column exists
+                        try:
+                            cursor.execute(
+                                "UPDATE model_versions SET accuracy = %s, model_size_mb = %s, deployed_at = NOW() WHERE model_id = %s",
+                                (accuracy_decimal, model_size_mb, model_id)
+                            )
+                            if classes_json:
+                                try:
+                                    cursor.execute(
+                                        "UPDATE model_versions SET classes_json = %s WHERE model_id = %s",
+                                        (classes_json, model_id)
+                                    )
+                                except Exception:
+                                    # classes_json column might not exist - ignore
+                                    pass
+                        except Exception as e:
+                            self.logger.warning(f"Could not update model in database: {e}")
+                    else:
+                        self.logger.info(f"Existing model has better accuracy ({existing_accuracy*100:.2f}% > {accuracy:.2f}%), not updating")
+                else:
+                    # Create new entry
+                    # Get next version number
+                    cursor.execute(
+                        "SELECT MAX(CAST(SUBSTRING(version, 2) AS UNSIGNED)) as max_version FROM model_versions"
+                    )
+                    version_result = cursor.fetchone()
+                    max_version = version_result[0] if version_result and version_result[0] else 0
+                    next_version = max_version + 1
+                    version_str = f"v{next_version}"
+                    
+                    # Determine if farm-specific
+                    is_farm_specific = (farm_id is not None and farm_id > 0)
+                    is_current = 0 if is_farm_specific else 1
+                    
+                    # Insert new model - try with classes_json first
+                    try:
+                        if classes_json:
+                            cursor.execute(
+                                "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at, classes_json) VALUES (%s, %s, %s, %s, %s, 1, %s, NOW(), %s)",
+                                (version_str, relative_path, accuracy_decimal, self.job_id, model_size_mb, is_current, classes_json)
+                            )
+                        else:
+                            cursor.execute(
+                                "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, %s, NOW())",
+                                (version_str, relative_path, accuracy_decimal, self.job_id, model_size_mb, is_current)
+                            )
+                    except Exception as e:
+                        # If classes_json column doesn't exist, try without it
+                        if 'classes_json' in str(e):
+                            cursor.execute(
+                                "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, %s, NOW())",
+                                (version_str, relative_path, accuracy_decimal, self.job_id, model_size_mb, is_current)
+                            )
+                        else:
+                            raise
+                    
+                    model_id = cursor.lastrowid
+                    
+                    # If farm-specific, auto-assign to farm
+                    if is_farm_specific:
+                        try:
+                            # Check if farm_model_assignments table exists
+                            cursor.execute("SHOW TABLES LIKE 'farm_model_assignments'")
+                            if cursor.fetchone():
+                                # Auto-assign model to farm
+                                cursor.execute(
+                                    "INSERT INTO farm_model_assignments (farm_parcels_id, model_id, assigned_by) VALUES (%s, %s, 1) ON DUPLICATE KEY UPDATE model_id = VALUES(model_id), assigned_at = CURRENT_TIMESTAMP",
+                                    (farm_id, model_id)
+                                )
+                                self.logger.info(f"Model automatically assigned to farm_id: {farm_id}")
+                        except Exception as e:
+                            self.logger.warning(f"Could not auto-assign model to farm: {e}")
+                    
+                    # If global model, deactivate previous global models
+                    if not is_farm_specific:
+                        try:
+                            cursor.execute(
+                                "UPDATE model_versions SET is_active = 0, is_current = 0 WHERE is_current = 1 AND model_id != %s",
+                                (model_id,)
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"Could not deactivate previous models: {e}")
+                    
+                    self.logger.info(f"[OK] Model {version_str} created in database (Accuracy: {accuracy:.2f}%)")
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"[OK] Model saved locally AND in database (Accuracy: {accuracy:.2f}%, Size: {model_size_mb:.2f} MB)")
+                self.logger.info(f"[INFO] Model file: {model_path}")
+                self.logger.info(f"[INFO] Database entry created/updated for job_id: {self.job_id}")
+                
+            except Exception as db_error:
+                # Database save is optional - don't fail training if DB is unavailable
+                self.logger.warning(f"Could not save model to database: {db_error}")
+                self.logger.info(f"[OK] Model saved locally only (Accuracy: {accuracy:.2f}%, Size: {model_size_mb:.2f} MB)")
+                self.logger.info(f"[WARNING] Database entry not created - will be created when model is uploaded")
             
         except Exception as e:
             self.logger.error(f"Failed to save model: {e}")
