@@ -27,6 +27,14 @@ DB_CONFIG = {
 # Training script path (will be in same directory or specified)
 TRAINING_SCRIPT = os.getenv('TRAINING_SCRIPT', 'train.py')
 
+# Training defaults (configurable via environment variables)
+DEFAULT_EPOCHS = int(os.getenv('DEFAULT_EPOCHS', '50'))  # Default number of training epochs
+DEFAULT_BATCH_SIZE = int(os.getenv('DEFAULT_BATCH_SIZE', '8'))  # Default training batch size
+
+print(f"📊 Training defaults configured:")
+print(f"   Default epochs: {DEFAULT_EPOCHS}")
+print(f"   Default batch size: {DEFAULT_BATCH_SIZE}")
+
 def get_training_job(job_id):
     """Get training job from database"""
     try:
@@ -122,16 +130,16 @@ def run_training(job_id):
         
         # Convert to int and use defaults if not set
         try:
-            epochs = int(epochs) if epochs is not None and epochs != '' else 50
+            epochs = int(epochs) if epochs is not None and epochs != '' else DEFAULT_EPOCHS
         except (ValueError, TypeError):
-            print(f"[WARNING] epochs value '{epochs}' is not a valid integer, using default 50")
-            epochs = 50
+            print(f"[WARNING] epochs value '{epochs}' is not a valid integer, using default {DEFAULT_EPOCHS}")
+            epochs = DEFAULT_EPOCHS
         
         try:
-            batch_size = int(batch_size) if batch_size is not None and batch_size != '' else 8
+            batch_size = int(batch_size) if batch_size is not None and batch_size != '' else DEFAULT_BATCH_SIZE
         except (ValueError, TypeError):
-            print(f"[WARNING] batch_size value '{batch_size}' is not a valid integer, using default 8")
-            batch_size = 8
+            print(f"[WARNING] batch_size value '{batch_size}' is not a valid integer, using default {DEFAULT_BATCH_SIZE}")
+            batch_size = DEFAULT_BATCH_SIZE
         
         # FIX: Detect and correct swapped values
         # If batch_size is unusually large (>32) and epochs is unusually small (<20), they're likely swapped
@@ -174,8 +182,8 @@ def run_training(job_id):
             return
         
         # Ensure epochs is an integer
-        epochs = int(epochs) if epochs else 50
-        batch_size = int(batch_size) if batch_size else 8
+        epochs = int(epochs) if epochs else DEFAULT_EPOCHS
+        batch_size = int(batch_size) if batch_size else DEFAULT_BATCH_SIZE
         
         # Run training script
         cmd = [
