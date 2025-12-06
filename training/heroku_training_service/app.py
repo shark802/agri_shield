@@ -83,9 +83,23 @@ def run_training(job_id):
             print(f"Job {job_id} not found")
             return
         
-        config = json.loads(job.get('training_config', '{}'))
+        # training_config might be a string (JSON) or already a dict
+        training_config_raw = job.get('training_config', '{}')
+        if isinstance(training_config_raw, str):
+            try:
+                config = json.loads(training_config_raw) if training_config_raw else {}
+            except json.JSONDecodeError:
+                print(f"Warning: Invalid JSON in training_config: {training_config_raw}")
+                config = {}
+        elif isinstance(training_config_raw, dict):
+            config = training_config_raw
+        else:
+            config = {}
+        
         epochs = config.get('epochs', 50)
         batch_size = config.get('batch_size', 8)
+        
+        print(f"Training config parsed: epochs={epochs}, batch_size={batch_size} (from config: {config})")
         
         update_job_status(job_id, 'running')
         log_to_database(job_id, 'INFO', 'Training started on Heroku service')

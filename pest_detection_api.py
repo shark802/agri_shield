@@ -52,6 +52,103 @@ output_details = None
 MODEL_VERSION = None  # Store model version from server
 MODEL_ACCURACY = None  # Store model accuracy from server
 
+# ============================================================================
+# MODEL CACHING SYSTEM (Farm-Specific Models)
+# ============================================================================
+
+class ModelCache:
+    """Cache for farm-specific models with version tracking"""
+    
+    def __init__(self):
+        self.cache = {}  # {farm_id: {'session': session, 'input_details': input_details, 'output_details': output_details, 'model_path': path, 'version': version, 'accuracy': accuracy, 'last_used': timestamp}}
+        self.lock = threading.Lock()
+        self.models_dir = Path(__file__).resolve().parent / "models"
+        self.models_dir.mkdir(exist_ok=True)
+    
+    def get_cache_key(self, farm_id=None, device_id=None):
+        """Generate cache key from farm_id or device_id"""
+        if farm_id:
+            return f"farm_{farm_id}"
+        elif device_id:
+            return f"device_{device_id}"
+        return "global"
+    
+    def get_cached_model(self, farm_id=None, device_id=None):
+        """Get cached model if available and valid"""
+        cache_key = self.get_cache_key(farm_id, device_id)
+        
+        with self.lock:
+            if cache_key in self.cache:
+                cached = self.cache[cache_key]
+                # Check if model file still exists
+                if cached['model_path'] and Path(cached['model_path']).exists():
+                    cached['last_used'] = time.time()
+                    return cached
+                else:
+                    # Model file deleted, remove from cache
+                    del self.cache[cache_key]
+        
+        return None
+    
+    def cache_model(self, farm_id=None, device_id=None, session=None, input_details=None, 
+                   output_details=None, model_path=None, version=None, accuracy=None):
+        """Cache a loaded model"""
+        cache_key = self.get_cache_key(farm_id, device_id)
+        
+        with self.lock:
+            self.cache[cache_key] = {
+                'session': session,
+                'input_details': input_details,
+                'output_details': output_details,
+                'model_path': model_path,
+                'version': version,
+                'accuracy': accuracy,
+                'last_used': time.time()
+            }
+            print(f"✅ Cached model for {cache_key}: {version} (accuracy: {accuracy}%)")
+    
+    def check_model_version(self, farm_id=None, device_id=None, current_version=None):
+        """Check if cached model version matches current version"""
+        cached = self.get_cached_model(farm_id, device_id)
+        if cached and cached.get('version') == current_version:
+            return True
+        return False
+    
+    def invalidate_cache(self, farm_id=None, device_id=None):
+        """Invalidate cache for specific farm/device"""
+        cache_key = self.get_cache_key(farm_id, device_id)
+        with self.lock:
+            if cache_key in self.cache:
+                # Close session if exists
+                if self.cache[cache_key].get('session'):
+                    try:
+                        self.cache[cache_key]['session'].close()
+                    except:
+                        pass
+                del self.cache[cache_key]
+                print(f"🗑️  Invalidated cache for {cache_key}")
+    
+    def cleanup_old_models(self, max_age_seconds=3600):
+        """Remove models from cache that haven't been used recently"""
+        current_time = time.time()
+        with self.lock:
+            to_remove = []
+            for key, cached in self.cache.items():
+                if current_time - cached.get('last_used', 0) > max_age_seconds:
+                    to_remove.append(key)
+            
+            for key in to_remove:
+                if self.cache[key].get('session'):
+                    try:
+                        self.cache[key]['session'].close()
+                    except:
+                        pass
+                del self.cache[key]
+                print(f"🧹 Cleaned up unused model cache: {key}")
+
+# Global model cache instance
+model_cache = ModelCache()
+
 # Detection thresholds (configurable via environment variables)
 DETECTION_CONF_THRESHOLD = float(os.getenv('DETECTION_CONF_THRESHOLD', '0.25'))  # Base confidence threshold (25%)
 CLASSIFICATION_MIN_THRESHOLD = float(os.getenv('CLASSIFICATION_MIN_THRESHOLD', '0.5'))  # Minimum for classification (50%)
@@ -310,7 +407,7 @@ if ONNX_AVAILABLE:
                 "black-bug",
                 "brown_hopper",
                 "green_hopper",
-            ]
+        ]
         
         session, input_details, output_details = load_onnx_model(ONNX_MODEL_PATH)
         
@@ -942,39 +1039,84 @@ def detect() -> Any:
     farm_id = request.form.get('farm_id') or request.form.get('farm_parcels_id')
     device_id = request.form.get('device_id')
     
+    # Track which model is being used for logging
+    model_source = "global"
+    used_farm_id = None
+    
     # If device_id provided, try to get farm-specific model
     if device_id or farm_id:
         try:
-            web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
-            model_url = f"{web_server_url}/api/training/get_model_file_for_farm.php"
+            # First, check cache for existing model
+            cached_model = model_cache.get_cached_model(farm_id=farm_id, device_id=device_id)
             
-            params = {}
-            if farm_id:
-                params['farm_parcels_id'] = farm_id
-            if device_id:
-                params['device_id'] = device_id
-            
-            # Try to download farm-specific model
-            response = requests.get(model_url, params=params, timeout=180, stream=True)
-            if response.status_code == 200:
-                models_dir = Path(__file__).resolve().parent / "models"
-                models_dir.mkdir(exist_ok=True)
+            if cached_model:
+                # Use cached model
+                session = cached_model['session']
+                input_details = cached_model['input_details']
+                output_details = cached_model['output_details']
+                ONNX_MODEL_PATH = cached_model['model_path']
+                MODEL_VERSION = cached_model.get('version', 'N/A')
+                MODEL_ACCURACY = cached_model.get('accuracy', 'N/A')
+                model_source = f"cached_{model_cache.get_cache_key(farm_id, device_id)}"
+                used_farm_id = farm_id or device_id
+                print(f"✅ Using cached model for {model_cache.get_cache_key(farm_id, device_id)}: {MODEL_VERSION}")
+            else:
+                # Download and cache new model
+                web_server_url = os.getenv('WEB_SERVER_URL', 'https://agrishield.bccbsis.com/Proto1')
+                model_url = f"{web_server_url}/api/training/get_model_file_for_farm.php"
                 
-                # Save as farm-specific model file
-                farm_model_path = models_dir / f"farm_{farm_id or device_id}.onnx"
-                with open(farm_model_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
+                params = {}
+                if farm_id:
+                    params['farm_parcels_id'] = farm_id
+                if device_id:
+                    params['device_id'] = device_id
                 
-                # Load the farm-specific model
-                session, input_details, output_details = load_onnx_model(str(farm_model_path))
-                ONNX_MODEL_PATH = str(farm_model_path)
-                MODEL_VERSION = response.headers.get('X-Model-Version', 'N/A')
-                MODEL_ACCURACY = response.headers.get('X-Model-Accuracy', 'N/A')
-                print(f"✅ Loaded farm-specific model: {MODEL_VERSION} (accuracy: {MODEL_ACCURACY}%)")
+                # Try to download farm-specific model
+                print(f"📥 Downloading model for {farm_id or device_id}...")
+                response = requests.get(model_url, params=params, timeout=180, stream=True)
+                
+                if response.status_code == 200:
+                    models_dir = model_cache.models_dir
+                    
+                    # Save as farm-specific model file
+                    cache_key = model_cache.get_cache_key(farm_id, device_id)
+                    farm_model_path = models_dir / f"{cache_key}.onnx"
+                    
+                    with open(farm_model_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    # Load the farm-specific model
+                    session, input_details, output_details = load_onnx_model(str(farm_model_path))
+                    ONNX_MODEL_PATH = str(farm_model_path)
+                    MODEL_VERSION = response.headers.get('X-Model-Version', 'N/A')
+                    MODEL_ACCURACY = response.headers.get('X-Model-Accuracy', 'N/A')
+                    
+                    # Cache the model
+                    model_cache.cache_model(
+                        farm_id=farm_id,
+                        device_id=device_id,
+                        session=session,
+                        input_details=input_details,
+                        output_details=output_details,
+                        model_path=str(farm_model_path),
+                        version=MODEL_VERSION,
+                        accuracy=MODEL_ACCURACY
+                    )
+                    
+                    model_source = f"farm_{farm_id or device_id}"
+                    used_farm_id = farm_id or device_id
+                    print(f"✅ Loaded and cached farm-specific model: {MODEL_VERSION} (accuracy: {MODEL_ACCURACY}%)")
+                elif response.status_code == 404:
+                    print(f"⚠️  No farm-specific model found for {farm_id or device_id}, using default model")
+                    model_source = "global_fallback"
+                else:
+                    print(f"⚠️  Error downloading model (HTTP {response.status_code}), using default model")
+                    model_source = "global_fallback"
         except Exception as e:
             print(f"⚠️  Could not load farm-specific model ({e}), using default model")
+            model_source = "global_fallback"
             # Continue with default model
     
     try:
@@ -1021,7 +1163,10 @@ def detect() -> Any:
     # Don't lower threshold automatically - this causes false positives
     # Instead, keep the threshold high to reduce false positives
     
-    # Debug: Log detection results
+    # Debug: Log detection results with model info
+    print(f"🔍 Detection using model: {model_source} (version: {MODEL_VERSION}, accuracy: {MODEL_ACCURACY}%)")
+    if used_farm_id:
+        print(f"🔍 Farm/Device ID: {used_farm_id}")
     print(f"🔍 Final detection results: {total_detections} total pests detected")
     for pest, count in counts.items():
         if count > 0:
@@ -1118,10 +1263,17 @@ def detect() -> Any:
         "inference_time_ms": round(dt * 1000, 1),
         "model": Path(ONNX_MODEL_PATH).name if ONNX_MODEL_PATH else "none",
         "framework": "ONNX Runtime",
-        "known_classes": CLASS_NAMES  # List of all known pest classes
+        "known_classes": CLASS_NAMES,  # List of all known pest classes
+        "model_metadata": {
+            "source": model_source,  # "global", "cached_farm_X", "farm_X", "global_fallback"
+            "farm_id": used_farm_id,  # Farm/device ID if farm-specific model used
+            "version": MODEL_VERSION or "N/A",
+            "accuracy": float(MODEL_ACCURACY) if MODEL_ACCURACY else None,
+            "cached": model_source.startswith("cached_")  # Whether model was from cache
+        }
     }
     
-    # Add model metadata if available
+    # Add model metadata if available (backward compatibility)
     if MODEL_VERSION:
         response_data["model_version"] = MODEL_VERSION
     if MODEL_ACCURACY:
@@ -1186,10 +1338,110 @@ def get_status(job_id):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
+# ============================================================================
+# CACHE MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.route('/cache/invalidate', methods=['POST'])
+def invalidate_cache():
+    """Invalidate model cache for a specific farm/device"""
+    try:
+        data = request.json or {}
+        farm_id = data.get('farm_id') or data.get('farm_parcels_id')
+        device_id = data.get('device_id')
+        
+        if not farm_id and not device_id:
+            return jsonify({
+                'success': False,
+                'message': 'farm_id or device_id required'
+            }), 400
+        
+        model_cache.invalidate_cache(farm_id=farm_id, device_id=device_id)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Cache invalidated for {farm_id or device_id}'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/cache/cleanup', methods=['POST'])
+def cleanup_cache():
+    """Clean up old unused models from cache"""
+    try:
+        max_age = request.json.get('max_age_seconds', 3600) if request.json else 3600
+        model_cache.cleanup_old_models(max_age_seconds=max_age)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Cache cleanup completed',
+            'cached_models': len(model_cache.cache)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/cache/status', methods=['GET'])
+def cache_status():
+    """Get cache status"""
+    try:
+        cache_info = {}
+        for key, cached in model_cache.cache.items():
+            cache_info[key] = {
+                'version': cached.get('version', 'N/A'),
+                'accuracy': cached.get('accuracy', 'N/A'),
+                'last_used': cached.get('last_used', 0),
+                'age_seconds': time.time() - cached.get('last_used', 0)
+            }
+        
+        return jsonify({
+            'success': True,
+            'total_cached': len(model_cache.cache),
+            'cache': cache_info
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# ============================================================================
+# STARTUP INITIALIZATION
+# ============================================================================
+
+def initialize_app():
+    """Initialize app on startup"""
+    print("🚀 Initializing AgriShield API...")
+    
+    # Clean up old cached models (older than 1 hour)
+    print("🧹 Cleaning up old cached models...")
+    model_cache.cleanup_old_models(max_age_seconds=3600)
+    
+    # Load default model
+    print("📦 Loading default model...")
+    try:
+        model_path = find_onnx_model()
+        if model_path:
+            global session, input_details, output_details, ONNX_MODEL_PATH
+            session, input_details, output_details = load_onnx_model(model_path)
+            ONNX_MODEL_PATH = model_path
+            print(f"✅ Default model loaded: {Path(model_path).name}")
+        else:
+            print("⚠️  No default model found")
+    except Exception as e:
+        print(f"⚠️  Error loading default model: {e}")
+    
+    print("✅ Initialization complete")
+
+# Initialize on import (for production) or on first request
+if os.getenv('FLASK_ENV') != 'development':
+    initialize_app()
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
     print(f"Starting Combined AgriShield API on port {port}...")
     print(f"  - Pest Detection: ONNX Runtime")
     print(f"  - Training Service: PyTorch")
+    print(f"  - Model Caching: Enabled")
+    
+    # Initialize on startup
+    initialize_app()
+    
     app.run(host="0.0.0.0", port=port, debug=False)
 
