@@ -85,21 +85,57 @@ def run_training(job_id):
         
         # training_config might be a string (JSON) or already a dict
         training_config_raw = job.get('training_config', '{}')
+        
+        # IMPORTANT: Log the raw config first
+        print(f"[DEBUG] Raw training_config from database: {training_config_raw} (type: {type(training_config_raw)})")
+        print(f"[DEBUG] Raw training_config is None: {training_config_raw is None}")
+        print(f"[DEBUG] Raw training_config is empty: {training_config_raw == '' or training_config_raw == '{}'}")
+        
         if isinstance(training_config_raw, str):
             try:
-                config = json.loads(training_config_raw) if training_config_raw else {}
-            except json.JSONDecodeError:
-                print(f"Warning: Invalid JSON in training_config: {training_config_raw}")
+                if training_config_raw and training_config_raw.strip() and training_config_raw.strip() != '{}':
+                    config = json.loads(training_config_raw)
+                else:
+                    print(f"[WARNING] training_config is empty string or '{{}}', using defaults")
+                    config = {}
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] Invalid JSON in training_config: {training_config_raw}")
+                print(f"[ERROR] JSON decode error: {e}")
                 config = {}
         elif isinstance(training_config_raw, dict):
             config = training_config_raw
+        elif training_config_raw is None:
+            print(f"[WARNING] training_config is None, using defaults")
+            config = {}
         else:
+            print(f"[WARNING] training_config is unexpected type: {type(training_config_raw)}, using defaults")
             config = {}
         
-        epochs = config.get('epochs', 50)
-        batch_size = config.get('batch_size', 8)
+        # Extract epochs and batch_size with careful handling
+        epochs = config.get('epochs') if isinstance(config, dict) else None
+        batch_size = config.get('batch_size') if isinstance(config, dict) else None
         
-        print(f"Training config parsed: epochs={epochs}, batch_size={batch_size} (from config: {config})")
+        # Convert to int and use defaults if not set
+        try:
+            epochs = int(epochs) if epochs is not None and epochs != '' else 50
+        except (ValueError, TypeError):
+            print(f"[WARNING] epochs value '{epochs}' is not a valid integer, using default 50")
+            epochs = 50
+        
+        try:
+            batch_size = int(batch_size) if batch_size is not None and batch_size != '' else 8
+        except (ValueError, TypeError):
+            print(f"[WARNING] batch_size value '{batch_size}' is not a valid integer, using default 8")
+            batch_size = 8
+        
+        # IMPORTANT: Log the config parsing for debugging
+        print(f"[DEBUG] Training config parsed: {config}")
+        print(f"[DEBUG] Epochs value: {epochs} (type: {type(epochs)})")
+        print(f"[DEBUG] Batch size value: {batch_size} (type: {type(batch_size)})")
+        print(f"[INFO] Using training config: epochs={epochs}, batch_size={batch_size}")
+        
+        # Log to database for visibility
+        log_to_database(job_id, 'INFO', f'Training config parsed: epochs={epochs}, batch_size={batch_size} (from config: {config})')
         
         update_job_status(job_id, 'running')
         log_to_database(job_id, 'INFO', 'Training started on Heroku service')
@@ -124,6 +160,10 @@ def run_training(job_id):
             log_to_database(job_id, 'ERROR', error_msg)
             return
         
+        # Ensure epochs is an integer
+        epochs = int(epochs) if epochs else 50
+        batch_size = int(batch_size) if batch_size else 8
+        
         # Run training script
         cmd = [
             'python', script_path,
@@ -132,7 +172,9 @@ def run_training(job_id):
             '--batch_size', str(batch_size)
         ]
         
+        print(f"[DEBUG] Command being executed: {' '.join(cmd)}")
         log_to_database(job_id, 'INFO', f'Running: {" ".join(cmd)}')
+        log_to_database(job_id, 'INFO', f'Starting training with epochs={epochs}, batch_size={batch_size}')
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1 hour timeout
         
