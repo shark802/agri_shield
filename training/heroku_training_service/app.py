@@ -133,6 +133,14 @@ def run_training(job_id):
             print(f"[WARNING] batch_size value '{batch_size}' is not a valid integer, using default 8")
             batch_size = 8
         
+        # FIX: Detect and correct swapped values
+        # If batch_size is unusually large (>32) and epochs is unusually small (<20), they're likely swapped
+        if batch_size > 32 and epochs < 20:
+            print(f"[WARNING] Detected swapped values: epochs={epochs}, batch_size={batch_size}")
+            print(f"[FIX] Swapping values: epochs={batch_size}, batch_size={epochs}")
+            epochs, batch_size = batch_size, epochs
+            log_to_database(job_id, 'WARNING', f'Swapped reversed values: epochs={epochs}, batch_size={batch_size}')
+        
         # IMPORTANT: Log the config parsing for debugging
         print(f"[DEBUG] Training config parsed: {config}")
         print(f"[DEBUG] Epochs value: {epochs} (type: {type(epochs)})")
