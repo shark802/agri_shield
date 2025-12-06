@@ -156,7 +156,7 @@ CONFIDENCE_GAP_REQUIREMENT = float(os.getenv('CONFIDENCE_GAP_REQUIREMENT', '0.2'
 YOLO_CONF_THRESHOLD = float(os.getenv('YOLO_CONF_THRESHOLD', '0.35'))  # Minimum for YOLO (35%)
 
 # Training defaults (configurable via environment variables)
-DEFAULT_EPOCHS = int(os.getenv('DEFAULT_EPOCHS', '50'))  # Default number of training epochs
+DEFAULT_EPOCHS = int(os.getenv('DEFAULT_EPOCHS', '10'))  # Default number of training epochs
 DEFAULT_BATCH_SIZE = int(os.getenv('DEFAULT_BATCH_SIZE', '8'))  # Default training batch size
 
 print(f"📊 Detection thresholds configured:")

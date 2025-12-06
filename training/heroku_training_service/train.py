@@ -1093,7 +1093,7 @@ def create_combined_dataset(logger):
 def main():
     """Main training function"""
     # Get default epochs and batch_size from environment variables
-    default_epochs = int(os.getenv('DEFAULT_EPOCHS', '50'))
+    default_epochs = int(os.getenv('DEFAULT_EPOCHS', '10'))
     default_batch_size = int(os.getenv('DEFAULT_BATCH_SIZE', '16'))
     
     parser = argparse.ArgumentParser(description='Admin Training Script')

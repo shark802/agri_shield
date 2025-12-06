@@ -8,7 +8,7 @@ You can now configure the default epochs and batch size for your entire system u
 
 Set these environment variables to configure training defaults:
 
-- **`DEFAULT_EPOCHS`** - Default number of training epochs (default: 50)
+- **`DEFAULT_EPOCHS`** - Default number of training epochs (default: 10)
 - **`DEFAULT_BATCH_SIZE`** - Default training batch size (default: 8)
 
 ## 🚀 How to Set
@@ -130,5 +130,5 @@ Even with environment variables set, you can still override for specific jobs:
 - Environment variables must be set **before** starting the application
 - Changes require application restart to take effect
 - Job-specific values always take priority over environment variables
-- If environment variable is not set, defaults to 50 (epochs) and 8 (batch_size)
+- If environment variable is not set, defaults to 10 (epochs) and 8 (batch_size)
 

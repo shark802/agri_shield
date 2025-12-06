@@ -2143,7 +2143,9 @@ def main():
     """Main training function - Classification using ResNet18"""
     parser = argparse.ArgumentParser(description='Admin Training Script - YOLO Object Detection')
     parser.add_argument('--job_id', type=int, required=True, help='Training job ID')
-    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
+    # Get default epochs from environment variable
+    default_epochs = int(os.getenv('DEFAULT_EPOCHS', '10'))
+    parser.add_argument('--epochs', type=int, default=default_epochs, help=f'Number of epochs (default: {default_epochs})')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate (not used for YOLO)')
     

@@ -28,7 +28,7 @@ DB_CONFIG = {
 TRAINING_SCRIPT = os.getenv('TRAINING_SCRIPT', 'train.py')
 
 # Training defaults (configurable via environment variables)
-DEFAULT_EPOCHS = int(os.getenv('DEFAULT_EPOCHS', '50'))  # Default number of training epochs
+DEFAULT_EPOCHS = int(os.getenv('DEFAULT_EPOCHS', '10'))  # Default number of training epochs
 DEFAULT_BATCH_SIZE = int(os.getenv('DEFAULT_BATCH_SIZE', '8'))  # Default training batch size
 
 print(f"📊 Training defaults configured:")
@@ -342,7 +342,7 @@ def train_classification():
     Expected JSON:
     {
         "dataset_path": "/path/to/dataset",  # Required
-        "epochs": 50,                        # Optional, default 50
+        "epochs": 10,                        # Optional, default 10
         "batch": 16,                         # Optional, default 16
         "img_size": 224,                     # Optional, default 224
         "model": "resnet18",                 # Optional, default "resnet18"
@@ -368,7 +368,7 @@ def train_classification():
             }), 400
         
         # Get optional parameters with defaults
-        epochs = data.get('epochs', 50)
+        epochs = data.get('epochs', DEFAULT_EPOCHS)
         batch_size = data.get('batch', 16)
         img_size = data.get('img_size', 224)
         model_name = data.get('model', 'resnet18')

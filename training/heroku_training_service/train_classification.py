@@ -193,10 +193,13 @@ def validate_epoch(model, dataloader, criterion, device):
     return epoch_loss, epoch_acc
 
 def main():
+    # Get default epochs from environment variable
+    default_epochs = int(os.getenv('DEFAULT_EPOCHS', '10'))
+    
     parser = argparse.ArgumentParser(description='ResNet18 Classification Training')
     parser.add_argument('--dataset_path', type=str, required=True, help='Path to dataset with train/valid/test folders')
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save model and results')
-    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
+    parser.add_argument('--epochs', type=int, default=default_epochs, help=f'Number of epochs (default: {default_epochs})')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--img_size', type=int, default=224, help='Image size')
     parser.add_argument('--model', type=str, default='resnet18', help='Model: resnet18, resnet34, resnet50')
