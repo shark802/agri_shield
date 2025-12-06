@@ -87,35 +87,38 @@ def run_training(job_id):
         epochs = job.get('epochs')
         batch_size = job.get('batch_size')
         
+        # Always parse training_config for logging and other data (farm_id, selected_pests, etc.)
+        training_config_raw = job.get('training_config', '{}')
+        config = {}  # Initialize config to avoid "not defined" error
+        
+        # Parse training_config JSON
+        if isinstance(training_config_raw, str):
+            try:
+                if training_config_raw and training_config_raw.strip() and training_config_raw.strip() != '{}':
+                    config = json.loads(training_config_raw)
+                else:
+                    config = {}
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] Invalid JSON in training_config: {training_config_raw}")
+                print(f"[ERROR] JSON decode error: {e}")
+                config = {}
+        elif isinstance(training_config_raw, dict):
+            config = training_config_raw
+        else:
+            config = {}
+        
         # If columns don't exist or are None, fall back to training_config JSON
         if epochs is None or batch_size is None:
             print(f"[INFO] epochs/batch_size columns not found, falling back to training_config JSON")
-            training_config_raw = job.get('training_config', '{}')
-            
-            # IMPORTANT: Log the raw config first
             print(f"[DEBUG] Raw training_config from database: {training_config_raw} (type: {type(training_config_raw)})")
-            
-            if isinstance(training_config_raw, str):
-                try:
-                    if training_config_raw and training_config_raw.strip() and training_config_raw.strip() != '{}':
-                        config = json.loads(training_config_raw)
-                    else:
-                        print(f"[WARNING] training_config is empty string or '{{}}', using defaults")
-                        config = {}
-                except json.JSONDecodeError as e:
-                    print(f"[ERROR] Invalid JSON in training_config: {training_config_raw}")
-                    print(f"[ERROR] JSON decode error: {e}")
-                    config = {}
-            elif isinstance(training_config_raw, dict):
-                config = training_config_raw
-            else:
-                config = {}
             
             # Extract from config if columns not available
             if epochs is None:
                 epochs = config.get('epochs') if isinstance(config, dict) else None
             if batch_size is None:
                 batch_size = config.get('batch_size') if isinstance(config, dict) else None
+        else:
+            print(f"[INFO] Using epochs/batch_size from dedicated columns (epochs={epochs}, batch_size={batch_size})")
         
         # Convert to int and use defaults if not set
         try:
@@ -137,7 +140,7 @@ def run_training(job_id):
         print(f"[INFO] Using training config: epochs={epochs}, batch_size={batch_size}")
         
         # Log to database for visibility
-        log_to_database(job_id, 'INFO', f'Training config parsed: epochs={epochs}, batch_size={batch_size} (from config: {config})')
+        log_to_database(job_id, 'INFO', f'Training config parsed: epochs={epochs}, batch_size={batch_size} (from columns: {job.get("epochs") is not None})')
         
         update_job_status(job_id, 'running')
         log_to_database(job_id, 'INFO', 'Training started on Heroku service')
