@@ -898,36 +898,149 @@ class ModelTrainer:
                 self.logger.info("Model saved locally (will upload after all epochs complete)")
                 print(f"[INFO] Model saved locally (upload after training)", flush=True)
             
-            # Save to database (only if pymysql available - local development)
+            # Save to database - create or update entry for this training job
+            # IMPROVED: Checks for existing model and only updates if accuracy is better
             if PYMYSQL_AVAILABLE and DB_CONFIG:
                 try:
                     conn = pymysql.connect(**DB_CONFIG)
                     cursor = conn.cursor()
                     
-                    # Generate version number
-                    cursor.execute("SELECT MAX(CAST(SUBSTRING(version, 2) AS UNSIGNED)) FROM model_versions")
-                    result = cursor.fetchone()
-                    next_version = (result[0] or 0) + 1
+                    # Check if model already exists for this job_id
+                    cursor.execute(
+                        "SELECT model_id FROM model_versions WHERE training_job_id = %s",
+                        (self.job_id,)
+                    )
+                    existing_model = cursor.fetchone()
                     
-                    # Deactivate all previous models
-                    cursor.execute("UPDATE model_versions SET is_active = 0, is_current = 0")
+                    # Get farm_id from training_jobs table (for farm-specific models)
+                    farm_id = None
+                    cursor.execute(
+                        "SELECT farm_parcels_id FROM training_jobs WHERE job_id = %s",
+                        (self.job_id,)
+                    )
+                    job_result = cursor.fetchone()
+                    if job_result and job_result[0]:
+                        farm_id = job_result[0]
+                    
+                    # Prepare classes JSON
+                    classes_json = None
+                    if classes:
+                        classes_json = json.dumps(list(classes))
                     
                     # Use uploaded path if available, otherwise local path
                     model_db_path = onnx_path.name if onnx_path else model_path.name
+                    accuracy_decimal = accuracy / 100.0
                     
-                    # Insert new model as active
-                    cursor.execute(
-                        "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, 1, NOW())",
-                        (f"v{next_version}", model_db_path, accuracy/100, self.job_id, model_size_mb)
-                    )
+                    if existing_model:
+                        # Update existing entry (only keep best model per job)
+                        model_id = existing_model[0]
+                        
+                        # Check if this model has better accuracy than existing
+                        cursor.execute(
+                            "SELECT accuracy FROM model_versions WHERE model_id = %s",
+                            (model_id,)
+                        )
+                        existing_acc_result = cursor.fetchone()
+                        existing_accuracy = existing_acc_result[0] if existing_acc_result else 0.0
+                        
+                        # Only update if this accuracy is better
+                        if accuracy_decimal > existing_accuracy:
+                            # Update model accuracy and size
+                            cursor.execute(
+                                "UPDATE model_versions SET accuracy = %s, model_size_mb = %s, deployed_at = NOW() WHERE model_id = %s",
+                                (accuracy_decimal, model_size_mb, model_id)
+                            )
+                            
+                            # Update classes_json if column exists
+                            if classes_json:
+                                try:
+                                    cursor.execute(
+                                        "UPDATE model_versions SET classes_json = %s WHERE model_id = %s",
+                                        (classes_json, model_id)
+                                    )
+                                except Exception:
+                                    # classes_json column might not exist - ignore
+                                    pass
+                            
+                            self.logger.info(f"[OK] Model updated in database (Accuracy improved: {accuracy:.2f}%)")
+                        else:
+                            self.logger.info(f"Existing model has better accuracy ({existing_accuracy*100:.2f}% > {accuracy:.2f}%), not updating")
+                    else:
+                        # Create new entry
+                        # Get next version number
+                        cursor.execute(
+                            "SELECT MAX(CAST(SUBSTRING(version, 2) AS UNSIGNED)) as max_version FROM model_versions"
+                        )
+                        version_result = cursor.fetchone()
+                        max_version = version_result[0] if version_result and version_result[0] else 0
+                        next_version = max_version + 1
+                        version_str = f"v{next_version}"
+                        
+                        # Determine if farm-specific
+                        is_farm_specific = (farm_id is not None and farm_id > 0)
+                        is_current = 0 if is_farm_specific else 1
+                        
+                        # Insert new model - try with classes_json first
+                        try:
+                            if classes_json:
+                                cursor.execute(
+                                    "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at, classes_json) VALUES (%s, %s, %s, %s, %s, 1, %s, NOW(), %s)",
+                                    (version_str, model_db_path, accuracy_decimal, self.job_id, model_size_mb, is_current, classes_json)
+                                )
+                            else:
+                                cursor.execute(
+                                    "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, %s, NOW())",
+                                    (version_str, model_db_path, accuracy_decimal, self.job_id, model_size_mb, is_current)
+                                )
+                        except Exception as e:
+                            # If classes_json column doesn't exist, try without it
+                            if 'classes_json' in str(e):
+                                cursor.execute(
+                                    "INSERT INTO model_versions (version, model_path, accuracy, training_job_id, model_size_mb, is_active, is_current, deployed_at) VALUES (%s, %s, %s, %s, %s, 1, %s, NOW())",
+                                    (version_str, model_db_path, accuracy_decimal, self.job_id, model_size_mb, is_current)
+                                )
+                            else:
+                                raise
+                        
+                        model_id = cursor.lastrowid
+                        
+                        # If farm-specific, auto-assign to farm
+                        if is_farm_specific:
+                            try:
+                                # Check if farm_model_assignments table exists
+                                cursor.execute("SHOW TABLES LIKE 'farm_model_assignments'")
+                                if cursor.fetchone():
+                                    # Auto-assign model to farm
+                                    cursor.execute(
+                                        "INSERT INTO farm_model_assignments (farm_parcels_id, model_id, assigned_by) VALUES (%s, %s, 1) ON DUPLICATE KEY UPDATE model_id = VALUES(model_id), assigned_at = CURRENT_TIMESTAMP",
+                                        (farm_id, model_id)
+                                    )
+                                    self.logger.info(f"Model automatically assigned to farm_id: {farm_id}")
+                            except Exception as e:
+                                self.logger.warning(f"Could not auto-assign model to farm: {e}")
+                        
+                        # If global model, deactivate previous global models
+                        if not is_farm_specific:
+                            try:
+                                cursor.execute(
+                                    "UPDATE model_versions SET is_active = 0, is_current = 0 WHERE is_current = 1 AND model_id != %s",
+                                    (model_id,)
+                                )
+                            except Exception as e:
+                                self.logger.warning(f"Could not deactivate previous models: {e}")
+                        
+                        self.logger.info(f"[OK] Model {version_str} created in database (Accuracy: {accuracy:.2f}%)")
                     
                     conn.commit()
                     conn.close()
                     
-                    self.logger.info(f"[OK] Model v{next_version} saved and automatically activated with accuracy: {accuracy:.2f}%")
-                    self.logger.info(f"[INFO] All previous models have been deactivated")
-                except Exception as e:
-                    self.logger.warning(f"Could not save model to database: {e}")
+                    self.logger.info(f"[OK] Model saved locally AND in database (Accuracy: {accuracy:.2f}%, Size: {model_size_mb:.2f} MB)")
+                    
+                except Exception as db_error:
+                    # Database save is optional - don't fail training if DB is unavailable
+                    self.logger.warning(f"Could not save model to database: {db_error}")
+                    self.logger.info(f"[OK] Model saved locally only (Accuracy: {accuracy:.2f}%, Size: {model_size_mb:.2f} MB)")
+                    self.logger.info(f"[WARNING] Database entry not created - will be created when model is uploaded")
             
             if upload and upload_success:
                 self.logger.info(f"[OK] Model uploaded to server and activated successfully!")
@@ -1636,83 +1749,83 @@ def create_combined_dataset(logger, job_id=None):
             except Exception as e:
                 print(f"[WARNING] Could not access database for images: {e}", flush=True)
                 db_images = []
-        
-        if db_images and len(db_images) > 0:
-            print(f"[OK] Found {len(db_images)} images in database", flush=True)
-            logger.info(f"Found {len(db_images)} images in database")
             
-            # Create classification-ready dataset structure
-            classification_train_dir = organized_dir / "classification" / "train"
-            classification_val_dir = organized_dir / "classification" / "val"
-            
-            # Create class folders
-            for split_dir in [classification_train_dir, classification_val_dir]:
-                split_dir.mkdir(parents=True, exist_ok=True)
-                for class_name in pest_classes:
-                    (split_dir / class_name).mkdir(exist_ok=True)
-            
-            # Normalize pest_class names to match YAML classes (handle variations)
-            def normalize_class_name(db_class):
-                """Normalize database class name to match YAML class names"""
-                db_class_lower = db_class.lower().replace(' ', '_').replace('-', '_')
-                # Try exact match first
-                for yaml_class in pest_classes:
-                    if db_class_lower == yaml_class.lower():
-                        return yaml_class
-                # Try partial match
-                for yaml_class in pest_classes:
-                    if yaml_class.lower() in db_class_lower or db_class_lower in yaml_class.lower():
-                        return yaml_class
-                return None
-            
-            # Reorganize images from database
-            import random
-            random.seed(42)
-            train_count = 0
-            val_count = 0
-            
-            for file_path, db_pest_class in db_images:
-                img_path = Path(file_path)
-                if not img_path.exists():
-                    # Try relative path from script directory
-                    img_path = script_dir / file_path.lstrip('/')
+            if db_images and len(db_images) > 0:
+                print(f"[OK] Found {len(db_images)} images in database", flush=True)
+                logger.info(f"Found {len(db_images)} images in database")
+                
+                # Create classification-ready dataset structure
+                classification_train_dir = organized_dir / "classification" / "train"
+                classification_val_dir = organized_dir / "classification" / "val"
+                
+                # Create class folders
+                for split_dir in [classification_train_dir, classification_val_dir]:
+                    split_dir.mkdir(parents=True, exist_ok=True)
+                    for class_name in pest_classes:
+                        (split_dir / class_name).mkdir(exist_ok=True)
+                
+                # Normalize pest_class names to match YAML classes (handle variations)
+                def normalize_class_name(db_class):
+                    """Normalize database class name to match YAML class names"""
+                    db_class_lower = db_class.lower().replace(' ', '_').replace('-', '_')
+                    # Try exact match first
+                    for yaml_class in pest_classes:
+                        if db_class_lower == yaml_class.lower():
+                            return yaml_class
+                    # Try partial match
+                    for yaml_class in pest_classes:
+                        if yaml_class.lower() in db_class_lower or db_class_lower in yaml_class.lower():
+                            return yaml_class
+                    return None
+                
+                # Reorganize images from database
+                import random
+                random.seed(42)
+                train_count = 0
+                val_count = 0
+                
+                for file_path, db_pest_class in db_images:
+                    img_path = Path(file_path)
                     if not img_path.exists():
+                        # Try relative path from script directory
+                        img_path = script_dir / file_path.lstrip('/')
+                        if not img_path.exists():
+                            continue
+                    
+                    # Normalize class name
+                    class_name = normalize_class_name(db_pest_class)
+                    if not class_name:
+                        logger.warning(f"Could not map database class '{db_pest_class}' to YAML classes")
                         continue
+                    
+                    # Split 80% train, 20% val
+                    is_train = random.random() < 0.8
+                    dest_dir = classification_train_dir if is_train else classification_val_dir
+                    dest = dest_dir / class_name / img_path.name
+                    
+                    if not dest.exists():
+                        try:
+                            shutil.copy2(img_path, dest)
+                            if is_train:
+                                train_count += 1
+                            else:
+                                val_count += 1
+                        except Exception as e:
+                            logger.warning(f"Error copying {img_path}: {e}")
+                            continue
                 
-                # Normalize class name
-                class_name = normalize_class_name(db_pest_class)
-                if not class_name:
-                    logger.warning(f"Could not map database class '{db_pest_class}' to YAML classes")
-                    continue
-                
-                # Split 80% train, 20% val
-                is_train = random.random() < 0.8
-                dest_dir = classification_train_dir if is_train else classification_val_dir
-                dest = dest_dir / class_name / img_path.name
-                
-                if not dest.exists():
-                    try:
-                        shutil.copy2(img_path, dest)
-                        if is_train:
-                            train_count += 1
-                        else:
-                            val_count += 1
-                    except Exception as e:
-                        logger.warning(f"Error copying {img_path}: {e}")
-                        continue
-            
-            if train_count > 0 or val_count > 0:
-                print(f"[OK] Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val", flush=True)
-                logger.info(f"Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val")
-                print(f"  Using reorganized dataset at: {classification_train_dir}", flush=True)
-                sys.stdout.flush()
-                return classification_train_dir, classification_val_dir, pest_classes
+                if train_count > 0 or val_count > 0:
+                    print(f"[OK] Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val", flush=True)
+                    logger.info(f"Reorganized {len(db_images)} images from database: {train_count} train, {val_count} val")
+                    print(f"  Using reorganized dataset at: {classification_train_dir}", flush=True)
+                    sys.stdout.flush()
+                    return classification_train_dir, classification_val_dir, pest_classes
+                else:
+                    print(f"[WARN] Could not copy images from database, trying YOLO labels...", flush=True)
+                    logger.warning("Could not copy images from database, trying YOLO labels")
             else:
-                print(f"[WARN] Could not copy images from database, trying YOLO labels...", flush=True)
-                logger.warning("Could not copy images from database, trying YOLO labels")
-        else:
-            print(f"[INFO] No images found in database, trying YOLO format...", flush=True)
-            logger.info("No images found in database, trying YOLO format")
+                print(f"[INFO] No images found in database, trying YOLO format...", flush=True)
+                logger.info("No images found in database, trying YOLO format")
     
     # PRIORITY 1B: Reorganize from YOLO format (if database method didn't work)
     # Check if we have the necessary directories for YOLO reorganization
@@ -1784,30 +1897,30 @@ def create_combined_dataset(logger, job_id=None):
                 try:
                     with open(label_path, 'r') as f:
                         first_line = f.readline().strip()
-                        if not first_line:
-                            skipped_invalid_label += 1
-                            continue
-                        
-                        parts = first_line.split()
-                        if len(parts) < 5:
-                            skipped_invalid_label += 1
-                            continue
-                        
-                        class_index = int(parts[0])
-                        # Map class index to class name (assuming indices match YAML order)
-                        if class_index >= len(pest_classes):
-                            skipped_invalid_class += 1
-                            continue
-                        
-                        class_name = pest_classes[class_index]
-                        # Copy image to class folder
-                        dest = output_dir / class_name / img_path.name
-                        if dest.exists():  # Avoid duplicates
-                            skipped_duplicate += 1
-                            continue
-                        
-                        shutil.copy2(img_path, dest)
-                        reorganized_count += 1
+                    if not first_line:
+                        skipped_invalid_label += 1
+                        continue
+                    
+                    parts = first_line.split()
+                    if len(parts) < 5:
+                        skipped_invalid_label += 1
+                        continue
+                    
+                    class_index = int(parts[0])
+                    # Map class index to class name (assuming indices match YAML order)
+                    if class_index >= len(pest_classes):
+                        skipped_invalid_class += 1
+                        continue
+                    
+                    class_name = pest_classes[class_index]
+                    # Copy image to class folder
+                    dest = output_dir / class_name / img_path.name
+                    if dest.exists():  # Avoid duplicates
+                        skipped_duplicate += 1
+                        continue
+                    
+                    shutil.copy2(img_path, dest)
+                    reorganized_count += 1
                 except Exception as e:
                     skipped_invalid_label += 1
                     logger.warning(f"Error processing {img_path}: {e}")
