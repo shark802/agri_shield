@@ -514,37 +514,39 @@ def run_training(job_id):
             print(f"Job {job_id} not found")
             return
         
-        # training_config might be a string (JSON) or already a dict
-        training_config_raw = job.get('training_config', '{}')
+        # PREFERRED: Use dedicated columns if they exist (more reliable)
+        epochs = job.get('epochs')
+        batch_size = job.get('batch_size')
         
-        # IMPORTANT: Log the raw config first
-        print(f"[DEBUG] Raw training_config from database: {training_config_raw} (type: {type(training_config_raw)})")
-        print(f"[DEBUG] Raw training_config is None: {training_config_raw is None}")
-        print(f"[DEBUG] Raw training_config is empty: {training_config_raw == '' or training_config_raw == '{}'}")
-        
-        if isinstance(training_config_raw, str):
-            try:
-                if training_config_raw and training_config_raw.strip() and training_config_raw.strip() != '{}':
-                    config = json.loads(training_config_raw)
-                else:
-                    print(f"[WARNING] training_config is empty string or '{{}}', using defaults")
+        # If columns don't exist or are None, fall back to training_config JSON
+        if epochs is None or batch_size is None:
+            print(f"[INFO] epochs/batch_size columns not found, falling back to training_config JSON")
+            training_config_raw = job.get('training_config', '{}')
+            
+            # IMPORTANT: Log the raw config first
+            print(f"[DEBUG] Raw training_config from database: {training_config_raw} (type: {type(training_config_raw)})")
+            
+            if isinstance(training_config_raw, str):
+                try:
+                    if training_config_raw and training_config_raw.strip() and training_config_raw.strip() != '{}':
+                        config = json.loads(training_config_raw)
+                    else:
+                        print(f"[WARNING] training_config is empty string or '{{}}', using defaults")
+                        config = {}
+                except json.JSONDecodeError as e:
+                    print(f"[ERROR] Invalid JSON in training_config: {training_config_raw}")
+                    print(f"[ERROR] JSON decode error: {e}")
                     config = {}
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] Invalid JSON in training_config: {training_config_raw}")
-                print(f"[ERROR] JSON decode error: {e}")
+            elif isinstance(training_config_raw, dict):
+                config = training_config_raw
+            else:
                 config = {}
-        elif isinstance(training_config_raw, dict):
-            config = training_config_raw
-        elif training_config_raw is None:
-            print(f"[WARNING] training_config is None, using defaults")
-            config = {}
-        else:
-            print(f"[WARNING] training_config is unexpected type: {type(training_config_raw)}, using defaults")
-            config = {}
-        
-        # Extract epochs and batch_size with careful handling
-        epochs = config.get('epochs') if isinstance(config, dict) else None
-        batch_size = config.get('batch_size') if isinstance(config, dict) else None
+            
+            # Extract from config if columns not available
+            if epochs is None:
+                epochs = config.get('epochs') if isinstance(config, dict) else None
+            if batch_size is None:
+                batch_size = config.get('batch_size') if isinstance(config, dict) else None
         
         # Convert to int and use defaults if not set
         try:
