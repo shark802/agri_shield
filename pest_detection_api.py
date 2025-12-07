@@ -155,6 +155,23 @@ CLASSIFICATION_MIN_THRESHOLD = float(os.getenv('CLASSIFICATION_MIN_THRESHOLD', '
 CONFIDENCE_GAP_REQUIREMENT = float(os.getenv('CONFIDENCE_GAP_REQUIREMENT', '0.2'))  # Required gap between top classes (20%)
 YOLO_CONF_THRESHOLD = float(os.getenv('YOLO_CONF_THRESHOLD', '0.35'))  # Minimum for YOLO (35%)
 
+# Pest-specific detection thresholds (lower thresholds = higher sensitivity)
+# These pests need lower thresholds to increase detection rate
+PEST_SPECIFIC_THRESHOLDS = {
+    'Rice_Bug': {
+        'detection_threshold': float(os.getenv('RICE_BUG_DETECTION_THRESHOLD', '0.15')),  # 15% (lower than base 25%)
+        'classification_min': float(os.getenv('RICE_BUG_CLASSIFICATION_MIN', '0.35')),  # 35% (lower than base 50%)
+        'yolo_threshold': float(os.getenv('RICE_BUG_YOLO_THRESHOLD', '0.20')),  # 20% (lower than base 35%)
+        'confidence_gap': float(os.getenv('RICE_BUG_CONFIDENCE_GAP', '0.15'))  # 15% (lower than base 20%)
+    },
+    'black-bug': {
+        'detection_threshold': float(os.getenv('BLACK_BUG_DETECTION_THRESHOLD', '0.15')),  # 15% (lower than base 25%)
+        'classification_min': float(os.getenv('BLACK_BUG_CLASSIFICATION_MIN', '0.35')),  # 35% (lower than base 50%)
+        'yolo_threshold': float(os.getenv('BLACK_BUG_YOLO_THRESHOLD', '0.20')),  # 20% (lower than base 35%)
+        'confidence_gap': float(os.getenv('BLACK_BUG_CONFIDENCE_GAP', '0.15'))  # 15% (lower than base 20%)
+    }
+}
+
 # Training defaults (configurable via environment variables)
 DEFAULT_EPOCHS = int(os.getenv('DEFAULT_EPOCHS', '10'))  # Default number of training epochs
 DEFAULT_BATCH_SIZE = int(os.getenv('DEFAULT_BATCH_SIZE', '8'))  # Default training batch size
@@ -164,6 +181,9 @@ print(f"   Base threshold: {DETECTION_CONF_THRESHOLD}")
 print(f"   Classification min: {CLASSIFICATION_MIN_THRESHOLD}")
 print(f"   Confidence gap: {CONFIDENCE_GAP_REQUIREMENT}")
 print(f"   YOLO threshold: {YOLO_CONF_THRESHOLD}")
+print(f"📊 Pest-specific thresholds (increased sensitivity):")
+for pest_name, thresholds in PEST_SPECIFIC_THRESHOLDS.items():
+    print(f"   {pest_name}: detection={thresholds['detection_threshold']}, classification={thresholds['classification_min']}, yolo={thresholds['yolo_threshold']}, gap={thresholds['confidence_gap']}")
 print(f"📊 Training defaults configured:")
 print(f"   Default epochs: {DEFAULT_EPOCHS}")
 print(f"   Default batch size: {DEFAULT_BATCH_SIZE}")
@@ -860,21 +880,31 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
             
             # Higher threshold for classification to reduce false positives
             # Also check if max confidence is significantly higher than other classes
-            min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)  # At least configured minimum for classification
+            # Use pest-specific thresholds if available, otherwise use defaults
+            detected_pest = CLASS_NAMES[max_class] if max_class < len(CLASS_NAMES) else None
+            if detected_pest and detected_pest in PEST_SPECIFIC_THRESHOLDS:
+                pest_thresholds = PEST_SPECIFIC_THRESHOLDS[detected_pest]
+                min_conf_threshold = max(conf_threshold, pest_thresholds['classification_min'])
+                required_gap = pest_thresholds['confidence_gap']
+                print(f"🔍 Using lower threshold for {detected_pest}: min={min_conf_threshold:.4f}, gap={required_gap:.4f}")
+            else:
+                min_conf_threshold = max(conf_threshold, CLASSIFICATION_MIN_THRESHOLD)  # At least configured minimum for classification
+                required_gap = CONFIDENCE_GAP_REQUIREMENT
+            
             second_max_conf = float(np.partition(class_probs, -2)[-2]) if len(class_probs) > 1 else 0
             confidence_gap = max_conf - second_max_conf
             
             print(f"🔍 Confidence check: max={max_conf:.4f}, second_max={second_max_conf:.4f}, gap={confidence_gap:.4f}, min_threshold={min_conf_threshold:.4f}")
             
             # Require: high confidence AND significant gap from other classes (reduces false positives)
-            if max_conf >= min_conf_threshold and confidence_gap >= CONFIDENCE_GAP_REQUIREMENT and 0 <= max_class < len(CLASS_NAMES):
+            if max_conf >= min_conf_threshold and confidence_gap >= required_gap and 0 <= max_class < len(CLASS_NAMES):
                 counts[CLASS_NAMES[max_class]] = 1  # Classification: only 1 detection
                 print(f"✅ Detection accepted: {CLASS_NAMES[max_class]} (conf={max_conf:.4f}, gap={confidence_gap:.4f})")
             else:
                 if max_conf < min_conf_threshold:
                     print(f"⚠️  Detection rejected: confidence {max_conf:.4f} < minimum threshold {min_conf_threshold:.4f}")
-                elif confidence_gap < CONFIDENCE_GAP_REQUIREMENT:
-                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < {CONFIDENCE_GAP_REQUIREMENT}) - likely false positive")
+                elif confidence_gap < required_gap:
+                    print(f"⚠️  Detection rejected: confidence gap too small ({confidence_gap:.4f} < {required_gap:.4f}) - likely false positive")
                 else:
                     print(f"⚠️  Detection rejected: class index out of range")
         else:
@@ -924,7 +954,14 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
             if 0 <= class_id < len(CLASS_NAMES):
                 all_detections_by_class[class_id].append(conf)
             
-            yolo_threshold = max(conf_threshold, YOLO_CONF_THRESHOLD)
+            # Use pest-specific thresholds if available
+            detected_pest = CLASS_NAMES[class_id] if 0 <= class_id < len(CLASS_NAMES) else None
+            if detected_pest and detected_pest in PEST_SPECIFIC_THRESHOLDS:
+                pest_thresholds = PEST_SPECIFIC_THRESHOLDS[detected_pest]
+                yolo_threshold = max(conf_threshold, pest_thresholds['yolo_threshold'])
+            else:
+                yolo_threshold = max(conf_threshold, YOLO_CONF_THRESHOLD)
+            
             if conf >= yolo_threshold and 0 <= class_id < len(CLASS_NAMES):
                 valid_detections.append({
                     'bbox': bbox,
@@ -941,7 +978,14 @@ def postprocess_output(output_data: np.ndarray, conf_threshold: float = None) ->
         if len(all_confs) > 0:
             max_conf = max(all_confs)
             avg_conf = sum(all_confs) / len(all_confs)
-            above_threshold = sum(1 for c in all_confs if c >= max(conf_threshold, YOLO_CONF_THRESHOLD))
+            # Use pest-specific threshold for counting
+            detected_pest = CLASS_NAMES[class_id] if class_id < len(CLASS_NAMES) else None
+            if detected_pest and detected_pest in PEST_SPECIFIC_THRESHOLDS:
+                pest_threshold = PEST_SPECIFIC_THRESHOLDS[detected_pest]['yolo_threshold']
+                threshold_to_use = max(conf_threshold, pest_threshold)
+            else:
+                threshold_to_use = max(conf_threshold, YOLO_CONF_THRESHOLD)
+            above_threshold = sum(1 for c in all_confs if c >= threshold_to_use)
             print(f"   {CLASS_NAMES[class_id]}: {len(all_confs)} total, max={max_conf:.4f}, avg={avg_conf:.4f}, above_threshold={above_threshold}")
     
     # Apply Non-Maximum Suppression (NMS) to remove duplicate detections
