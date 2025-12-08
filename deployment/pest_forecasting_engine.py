@@ -70,16 +70,6 @@ class PestForecastingEngine:
         try:
             conn = pymysql.connect(**self.db_config)
 
-            # If images_inbox has is_verified, only count verified detections
-            has_verified = False
-            try:
-                with conn.cursor() as c:
-                    c.execute("SHOW COLUMNS FROM images_inbox LIKE 'is_verified'")
-                    has_verified = c.fetchone() is not None
-            except Exception:
-                has_verified = False
-            verified_clause = "AND ii.is_verified = 1" if has_verified else ""
-
             if farm_id and farm_id > 0:
                 query = """
                 SELECT 
@@ -92,11 +82,9 @@ class PestForecastingEngine:
                 WHERE ii.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
                   AND ii.classification_json IS NOT NULL 
                   AND ii.classification_json != ''
-                  {verified_filter}
                   AND d.farm_parcels_id = %s
                 ORDER BY ii.created_at ASC
                 """
-                query = query.format(verified_filter=verified_clause)
                 params = [days_back, farm_id]
             elif barangay:
                 # Barangay is stored as farm_location in farm_parcels; fallback to profile.Barangay
@@ -114,11 +102,9 @@ class PestForecastingEngine:
                 WHERE ii.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
                   AND ii.classification_json IS NOT NULL 
                   AND ii.classification_json != ''
-                  {verified_filter}
                   AND (fp.farm_location = %s OR (fp.farm_location IS NULL AND pr.Barangay = %s))
                 ORDER BY ii.created_at ASC
                 """
-                query = query.format(verified_filter=verified_clause)
                 params = [days_back, barangay, barangay]
             else:
                 query = """
@@ -130,10 +116,8 @@ class PestForecastingEngine:
                 WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
                   AND classification_json IS NOT NULL 
                   AND classification_json != ''
-                  {verified_filter}
                 ORDER BY created_at ASC
                 """
-                query = query.format(verified_filter=verified_clause.replace("ii.", ""))
                 params = [days_back]
 
             df = pd.read_sql(query, conn, params=params)
