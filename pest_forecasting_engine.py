@@ -143,13 +143,14 @@ class PestForecastingEngine:
                 """
                 params = [days_back, farm_id]
             elif barangay:
-                # Barangay-specific query (like pest_reports_barangay.php)
+                # Barangay-specific query (using farm_parcels.Barangay - barangay address of the farm parcel)
+                # Check if farm_parcels has Barangay column, fallback to profile.Barangay
                 query = """
                 SELECT 
                     DATE(ii.created_at) as date,
                     ii.classification_json,
                     ii.device_id,
-                    pr.Barangay,
+                    COALESCE(fp.Barangay, pr.Barangay) as Barangay,
                     fp.farm_parcels_id
                 FROM images_inbox ii
                 INNER JOIN devices d ON d.device_id = ii.device_id
@@ -158,10 +159,10 @@ class PestForecastingEngine:
                 WHERE ii.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
                 AND ii.classification_json IS NOT NULL 
                 AND ii.classification_json != ''
-                AND pr.Barangay = %s
+                AND (fp.Barangay = %s OR (fp.Barangay IS NULL AND pr.Barangay = %s))
                 ORDER BY ii.created_at ASC
                 """
-                params = [days_back, barangay]
+                params = [days_back, barangay, barangay]
             else:
                 # All data query
                 query = """
@@ -747,23 +748,23 @@ class PestForecastingEngine:
             logger.error(f"Error saving forecast to database: {e}")
 
     def get_all_barangays(self) -> List[str]:
-        """Get list of all barangays with detection data (matching pest_reports_barangay.php)"""
+        """Get list of all barangays with detection data (using farm_parcels.Barangay - barangay address of the farm parcel)"""
         try:
             connection = pymysql.connect(**self.db_config)
             
+            # Use farm_parcels.Barangay (barangay address of the farm parcel), fallback to profile.Barangay
             query = """
-            SELECT DISTINCT pr.Barangay
+            SELECT DISTINCT COALESCE(fp.Barangay, pr.Barangay) as Barangay
             FROM devices d
             LEFT JOIN farm_parcels fp ON fp.farm_parcels_id = d.farm_parcels_id
             LEFT JOIN profile pr ON pr.profile_id = fp.profile_id
             INNER JOIN images_inbox ii ON ii.device_id = d.device_id
             WHERE ii.classification_json IS NOT NULL 
             AND ii.classification_json != ''
-            AND pr.Barangay IS NOT NULL
-            AND pr.Barangay != ''
-            GROUP BY pr.Barangay
+            AND (fp.Barangay IS NOT NULL AND fp.Barangay != '' OR pr.Barangay IS NOT NULL AND pr.Barangay != '')
+            GROUP BY COALESCE(fp.Barangay, pr.Barangay)
             HAVING COUNT(DISTINCT ii.ID) > 0
-            ORDER BY pr.Barangay ASC
+            ORDER BY COALESCE(fp.Barangay, pr.Barangay) ASC
             """
             
             df = pd.read_sql(query, connection)
