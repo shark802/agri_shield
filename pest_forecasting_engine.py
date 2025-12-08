@@ -311,21 +311,20 @@ class PestForecastingEngine:
 
     def prepare_training_data(self, farm_id: int = None, barangay: str = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Prepare training data by combining pest and weather data
+        Prepare training data from pest detection data only (no weather)
         For barangay-level: Aggregates all farms/devices in the barangay (like pest_reports_barangay.php)
         """
         logger.info(f"Preparing training data... (farm_id={farm_id}, barangay={barangay})")
         
-        # Get historical data (with optional filters)
+        # Get historical pest detection data (with optional filters)
         pest_data = self.get_historical_pest_data(30, farm_id=farm_id, barangay=barangay)
-        weather_data = self.get_historical_weather_data(30)
         
-        if pest_data.empty or weather_data.empty:
-            logger.warning("Insufficient historical data for training")
+        if pest_data.empty:
+            logger.warning("Insufficient historical pest detection data for training")
             return pd.DataFrame(), pd.DataFrame()
         
         # For barangay-level: Aggregate all data by date (combine all farms/devices in barangay)
-        if barangay and 'barangay' in pest_data.columns:
+        if barangay:
             logger.info(f"Aggregating all farms/devices in barangay '{barangay}' by date...")
             # Group by date and sum all pest counts (aggregate all farms in barangay)
             date_columns = ['date'] + [f'{pest}_count' for pest in self.pest_types]
@@ -339,39 +338,45 @@ class PestForecastingEngine:
             
             pest_data = aggregated_data
         
-        # Merge pest and weather data by date
-        combined_data = pd.merge(pest_data, weather_data, on='date', how='inner')
-        
-        # Create features for machine learning
+        # Create features from pest detection patterns only
         features = []
         targets = []
         
-        for _, row in combined_data.iterrows():
-            # Weather features
-            feature_vector = [
-                row['avg_temperature'],
-                row['avg_humidity'], 
-                row['avg_wind_speed'],
-                row['total_rainfall'],
-                row['avg_pressure'],
-                row['avg_cloudiness'],
-                row['max_temperature'],
-                row['min_temperature']
-            ]
+        for idx, row in pest_data.iterrows():
+            # Features based on pest detection patterns (no weather)
+            feature_vector = []
+            
+            # Individual pest counts
+            for pest in self.pest_types:
+                pest_col = f'{pest}_count'
+                feature_vector.append(row.get(pest_col, 0))
+            
+            # Total pests
+            feature_vector.append(row.get('total_pests', 0))
+            
+            # Day of week (cyclical pattern)
+            if 'date' in row:
+                date_val = pd.to_datetime(row['date'])
+                feature_vector.append(date_val.dayofweek)  # 0=Monday, 6=Sunday
+                feature_vector.append(date_val.day)  # Day of month
             
             features.append(feature_vector)
             
-            # Pest targets (total pests detected - aggregated for barangay if applicable)
-            targets.append(row['total_pests'])
+            # Target: total pests for next day (if available)
+            if idx < len(pest_data) - 1:
+                next_row = pest_data.iloc[idx + 1]
+                targets.append(next_row.get('total_pests', row.get('total_pests', 0)))
+            else:
+                # Last row - use current value
+                targets.append(row.get('total_pests', 0))
         
-        X = pd.DataFrame(features, columns=[
-            'temperature', 'humidity', 'wind_speed', 'rainfall',
-            'pressure', 'cloudiness', 'max_temp', 'min_temp'
-        ])
+        # Create feature column names
+        feature_cols = [f'{pest}_count' for pest in self.pest_types] + ['total_pests', 'day_of_week', 'day_of_month']
+        X = pd.DataFrame(features, columns=feature_cols)
         
         y = pd.Series(targets, name='total_pests')
         
-        logger.info(f"Prepared {len(X)} training samples")
+        logger.info(f"Prepared {len(X)} training samples from detection data only")
         if barangay:
             logger.info(f"Data aggregated from all farms/devices in barangay '{barangay}'")
         return X, y
@@ -512,13 +517,16 @@ class PestForecastingEngine:
                 aggregated['total_pests'] = aggregated[[f'{pest}_count' for pest in self.pest_types]].sum(axis=1)
                 historical_data = aggregated
                 logger.info(f"Found {len(historical_data)} days of aggregated data for barangay '{barangay}'")
+        elif farm_id:
+            logger.info(f"Gathering detection data for farm ID {farm_id}...")
+            historical_data = self.get_historical_pest_data(30, farm_id=farm_id)
+            if not historical_data.empty:
+                logger.info(f"Found {len(historical_data)} days of data for farm ID {farm_id}")
         
-        # Get weather forecast
-        weather_forecast = self.get_weather_forecast(days_ahead)
-        
-        if weather_forecast.empty:
-            logger.warning("No weather forecast available")
-            return {'error': 'No weather forecast data available'}
+        # Check if we have historical data
+        if historical_data is None or historical_data.empty:
+            logger.warning("No historical detection data available")
+            return {'error': 'No historical detection data available for prediction'}
         
         forecast_results = {
             'generated_at': datetime.now().isoformat(),
@@ -542,18 +550,13 @@ class PestForecastingEngine:
                 'pest_totals': pest_totals
             }
         
-        for _, weather_day in weather_forecast.iterrows():
-            weather_data = {
-                'temperature': weather_day['avg_temperature'],
-                'humidity': weather_day['avg_humidity'],
-                'wind_speed': weather_day['avg_wind_speed'],
-                'rainfall': weather_day['total_rainfall'],
-                'pressure': weather_day['avg_pressure'],
-                'cloudiness': weather_day['avg_cloudiness']
-            }
+        # Generate forecasts for next N days based on historical patterns
+        base_date = datetime.now().date()
+        for day_offset in range(days_ahead):
+            forecast_date = base_date + timedelta(days=day_offset)
             
-            # Predict pest risk for this day
-            pest_risks = self.predict_pest_risk(weather_data)
+            # Predict pest risk based on historical detection patterns (no weather)
+            pest_risks = self.predict_pest_risk_from_history(historical_data, forecast_date)
             
             # Calculate overall risk
             overall_risk_scores = [risk['risk_score'] for risk in pest_risks.values()]
@@ -570,18 +573,17 @@ class PestForecastingEngine:
             conclusion = None
             if barangay:
                 conclusion = self.generate_barangay_conclusion(
-                    pest_risks, weather_data, historical_data, weather_day['date']
+                    pest_risks, None, historical_data, forecast_date
                 )
             
             day_forecast = {
-                'date': weather_day['date'].strftime('%Y-%m-%d'),
-                'weather': weather_data,
+                'date': forecast_date.strftime('%Y-%m-%d'),
                 'overall_risk': {
                     'level': overall_level,
                     'score': round(overall_risk, 2)
                 },
                 'pest_risks': pest_risks,
-                'recommendations': self.generate_recommendations(pest_risks, weather_data),
+                'recommendations': self.generate_recommendations(pest_risks, None),
                 'conclusion': conclusion  # Barangay-level conclusion
             }
             
@@ -594,8 +596,7 @@ class PestForecastingEngine:
         """
         Generate a single conclusion for the entire barangay based on:
         - Aggregated pest risks from all farms/devices
-        - Weather conditions
-        - Historical patterns
+        - Historical detection patterns
         """
         conclusions = []
         
@@ -606,29 +607,28 @@ class PestForecastingEngine:
                            if risk['risk_level'] == 'medium']
         
         if high_risk_pests:
-            pest_names = ', '.join([pest.replace('_', ' ').title() for pest in high_risk_pests])
+            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in high_risk_pests])
             conclusions.append(f"High pest risk detected for {pest_names} across the barangay.")
             conclusions.append("All farms in this barangay should prepare preventive measures.")
         
         if medium_risk_pests and not high_risk_pests:
-            pest_names = ', '.join([pest.replace('_', ' ').title() for pest in medium_risk_pests])
+            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in medium_risk_pests])
             conclusions.append(f"Moderate pest activity expected for {pest_names}.")
             conclusions.append("Farmers should monitor their fields closely.")
-        
-        # Weather-based conclusion
-        temp = weather_data.get('temperature', 25)
-        humidity = weather_data.get('humidity', 70)
-        
-        if temp >= 28 and humidity >= 75:
-            conclusions.append("Weather conditions are highly favorable for pest activity across the barangay.")
-        elif temp >= 25 and humidity >= 70:
-            conclusions.append("Weather conditions are moderately favorable for pest activity.")
         
         # Historical context
         if historical_data is not None and not historical_data.empty:
             avg_pests = historical_data['total_pests'].mean()
+            recent_trend = historical_data['total_pests'].tail(7).mean() if len(historical_data) >= 7 else avg_pests
+            
             if avg_pests > 10:
                 conclusions.append(f"Historical data shows average of {avg_pests:.1f} pests per day in this barangay.")
+            
+            if recent_trend > avg_pests * 1.2:
+                conclusions.append("Recent detection trends show increasing pest activity.")
+            elif recent_trend < avg_pests * 0.8:
+                conclusions.append("Recent detection trends show decreasing pest activity.")
+            else:
                 conclusions.append("Current forecast aligns with historical patterns.")
         
         if not conclusions:
@@ -638,32 +638,31 @@ class PestForecastingEngine:
         return " ".join(conclusions)
 
     def generate_recommendations(self, pest_risks: Dict, weather_data: Dict) -> List[str]:
-        """Generate recommendations based on pest risks and weather"""
+        """Generate recommendations based on pest risks from detection patterns"""
         recommendations = []
         
         high_risk_pests = [pest for pest, risk in pest_risks.items() 
                           if risk['risk_level'] == 'high']
+        medium_risk_pests = [pest for pest, risk in pest_risks.items() 
+                           if risk['risk_level'] == 'medium']
         
         if high_risk_pests:
-            recommendations.append(f"High risk detected for: {', '.join(high_risk_pests)}")
+            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in high_risk_pests])
+            recommendations.append(f"High risk detected for: {pest_names}")
             recommendations.append("Consider preventive treatment with recommended pesticides")
             recommendations.append("Monitor fields closely for pest activity")
+            recommendations.append("Increase field inspections frequency")
         
-        if weather_data.get('humidity', 0) > 80:
-            recommendations.append("High humidity detected - favorable for pest reproduction")
-            recommendations.append("Ensure proper field drainage")
-        
-        if weather_data.get('temperature', 0) > 32:
-            recommendations.append("High temperature detected - monitor for heat stress")
-            recommendations.append("Consider irrigation to reduce plant stress")
-        
-        if weather_data.get('rainfall', 0) > 10:
-            recommendations.append("Heavy rainfall expected - check for standing water")
-            recommendations.append("Pests may seek refuge in plants")
+        if medium_risk_pests:
+            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in medium_risk_pests])
+            recommendations.append(f"Moderate risk for: {pest_names}")
+            recommendations.append("Continue regular monitoring")
+            recommendations.append("Prepare preventive measures if trend continues")
         
         if not recommendations:
-            recommendations.append("Weather conditions are favorable for pest control")
+            recommendations.append("Pest risk is low based on detection patterns")
             recommendations.append("Continue regular monitoring")
+            recommendations.append("Maintain good field hygiene practices")
         
         return recommendations
 
@@ -708,7 +707,9 @@ class PestForecastingEngine:
             # Insert forecast data
             for day_forecast in forecast_data.get('daily_forecasts', []):
                 forecast_date = day_forecast['date']
-                weather = day_forecast['weather']
+                
+                # Weather data is optional now (may not exist)
+                weather = day_forecast.get('weather', {})
                 
                 for pest_type, risk_info in day_forecast['pest_risks'].items():
                     insert_query = """
@@ -725,9 +726,9 @@ class PestForecastingEngine:
                         risk_info['risk_level'],
                         risk_info['risk_score'],
                         risk_info['confidence'],
-                        weather['temperature'],
-                        weather['humidity'],
-                        weather['rainfall'],
+                        weather.get('temperature') if weather else None,
+                        weather.get('humidity') if weather else None,
+                        weather.get('rainfall') if weather else None,
                         json.dumps(day_forecast['recommendations']),
                         farm_id,
                         barangay
