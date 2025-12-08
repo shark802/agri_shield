@@ -24,6 +24,11 @@ os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Try to import ONNX Runtime
 try:
@@ -485,6 +490,20 @@ else:
     output_details = None
 
 # ============================================================================
+# PEST FORECASTING SERVICE
+# ============================================================================
+
+# Try to import forecasting engine
+try:
+    from pest_forecasting_engine import PestForecastingEngine
+    FORECASTING_AVAILABLE = True
+    print("✅ Pest forecasting engine available")
+except ImportError as e:
+    FORECASTING_AVAILABLE = False
+    print(f"⚠️  Pest forecasting engine not available: {e}")
+    print("   Install dependencies: pandas, scikit-learn, pymysql")
+
+# ============================================================================
 # TRAINING SERVICE - Using PHP API Gateway (No Direct Database Access)
 # ============================================================================
 
@@ -736,13 +755,21 @@ def index() -> Any:
                 "status": "available",
                 "database": "via PHP API Gateway",
                 "method": "No direct MySQL access needed"
+            },
+            "forecasting": {
+                "status": "available" if FORECASTING_AVAILABLE else "unavailable",
+                "type": "Barangay-level pest forecasting",
+                "method": "Aggregates all farms/devices in barangay"
             }
         },
         "endpoints": {
             "health": "/health",
             "detect": "/detect (POST)",
             "train": "/train (POST)",
-            "training_status": "/status/<job_id> (GET)"
+            "training_status": "/status/<job_id> (GET)",
+            "forecast": "/forecast (POST)",
+            "forecast_barangay": "/forecast/barangay/<barangay> (GET)",
+            "forecast_all": "/forecast/all (POST)"
         }
     })
 
@@ -1529,6 +1556,188 @@ def cache_status():
             'total_cached': len(model_cache.cache),
             'cache': cache_info
         })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# ============================================================================
+# PEST FORECASTING ROUTES
+# ============================================================================
+
+def run_forecast_generation(barangay=None, days_ahead=7):
+    """Run forecast generation in background"""
+    try:
+        if not FORECASTING_AVAILABLE:
+            logger.error("Forecasting engine not available")
+            return
+        
+        # Database config from environment variables (for Heroku)
+        db_config = {
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'user': os.getenv('DB_USER', 'root'),
+            'password': os.getenv('DB_PASSWORD', ''),
+            'database': os.getenv('DB_NAME', 'asdb'),
+            'charset': os.getenv('DB_CHARSET', 'utf8mb4')
+        }
+        
+        engine = PestForecastingEngine(db_config=db_config)
+        
+        if barangay:
+            # Single barangay forecast
+            logger.info(f"Generating forecast for barangay: {barangay}")
+            engine.train_models(barangay=barangay)
+            forecast = engine.generate_forecast(days_ahead, barangay=barangay)
+            engine.save_forecast_to_database(forecast)
+            logger.info(f"Forecast generated and saved for {barangay}")
+        else:
+            # All barangays
+            barangays = engine.get_all_barangays()
+            logger.info(f"Generating forecasts for {len(barangays)} barangays")
+            for brgy in barangays:
+                try:
+                    engine.train_models(barangay=brgy)
+                    forecast = engine.generate_forecast(days_ahead, barangay=brgy)
+                    engine.save_forecast_to_database(forecast)
+                    logger.info(f"Forecast generated for {brgy}")
+                except Exception as e:
+                    logger.error(f"Error generating forecast for {brgy}: {e}")
+                    continue
+            logger.info(f"Completed forecasts for {len(barangays)} barangays")
+            
+    except Exception as e:
+        logger.error(f"Error in forecast generation: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+@app.route('/forecast', methods=['POST'])
+def generate_forecast():
+    """Generate pest forecast for specific barangay or all barangays"""
+    if not FORECASTING_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': 'Forecasting engine not available. Install dependencies: pandas, scikit-learn, pymysql'
+        }), 503
+    
+    try:
+        data = request.json or {}
+        barangay = data.get('barangay')
+        days_ahead = int(data.get('days_ahead', 7))
+        
+        # Run in background thread
+        thread = threading.Thread(target=run_forecast_generation, args=(barangay, days_ahead))
+        thread.daemon = True
+        thread.start()
+        
+        if barangay:
+            return jsonify({
+                'success': True,
+                'message': f'Forecast generation started for barangay: {barangay}',
+                'barangay': barangay,
+                'days_ahead': days_ahead
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Forecast generation started for all barangays',
+                'days_ahead': days_ahead
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/forecast/barangay/<barangay>', methods=['GET'])
+def get_barangay_forecast(barangay):
+    """Get current forecast for a specific barangay"""
+    try:
+        # Database config
+        db_config = {
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'user': os.getenv('DB_USER', 'root'),
+            'password': os.getenv('DB_PASSWORD', ''),
+            'database': os.getenv('DB_NAME', 'asdb'),
+            'charset': os.getenv('DB_CHARSET', 'utf8mb4')
+        }
+        
+        import pymysql
+        conn = pymysql.connect(**db_config)
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        
+        # Get latest forecast for this barangay
+        query = """
+        SELECT 
+            forecast_date,
+            pest_type,
+            risk_level,
+            risk_score,
+            confidence,
+            weather_temperature,
+            weather_humidity,
+            weather_rainfall,
+            recommendations
+        FROM pest_forecasts 
+        WHERE barangay = %s
+        AND forecast_date >= CURDATE()
+        ORDER BY forecast_date ASC, pest_type ASC
+        """
+        
+        cursor.execute(query, (barangay,))
+        results = cursor.fetchall()
+        conn.close()
+        
+        # Group by date
+        forecasts_by_date = {}
+        for row in results:
+            date = str(row['forecast_date'])
+            if date not in forecasts_by_date:
+                forecasts_by_date[date] = {
+                    'date': date,
+                    'weather': {
+                        'temperature': row['weather_temperature'],
+                        'humidity': row['weather_humidity'],
+                        'rainfall': row['weather_rainfall']
+                    },
+                    'pest_risks': {},
+                    'recommendations': json.loads(row['recommendations']) if row['recommendations'] else []
+                }
+            
+            forecasts_by_date[date]['pest_risks'][row['pest_type']] = {
+                'risk_level': row['risk_level'],
+                'risk_score': float(row['risk_score']),
+                'confidence': float(row['confidence'])
+            }
+        
+        return jsonify({
+            'success': True,
+            'barangay': barangay,
+            'forecasts': list(forecasts_by_date.values())
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/forecast/all', methods=['POST'])
+def generate_all_forecasts():
+    """Generate forecasts for all barangays (background job)"""
+    if not FORECASTING_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': 'Forecasting engine not available'
+        }), 503
+    
+    try:
+        data = request.json or {}
+        days_ahead = int(data.get('days_ahead', 7))
+        
+        # Run in background thread
+        thread = threading.Thread(target=run_forecast_generation, args=(None, days_ahead))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Forecast generation started for all barangays',
+            'days_ahead': days_ahead
+        })
+        
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
