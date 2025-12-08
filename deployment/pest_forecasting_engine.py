@@ -1,538 +1,370 @@
 #!/usr/bin/env python3
 """
-AgriShield Pest Forecasting Engine
-Predicts pest outbreaks using weather data and historical pest detection data
+AgriShield Pest Forecasting Engine (Deployment)
+Uses historical pest detection data (images_inbox -> devices -> farm_parcels)
+Outputs percentage-based risk per pest; no weather dependency.
 """
 
-import pandas as pd
-import numpy as np
+import os
 import json
-import pymysql
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
 import logging
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
-import warnings
-warnings.filterwarnings('ignore')
+from datetime import datetime, timedelta
+from typing import Dict, List
 
-# Setup logging
+import numpy as np
+import pandas as pd
+import pymysql
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 class PestForecastingEngine:
-    def __init__(self):
-        # Database configuration
-        self.db_config = {
-            'host': 'localhost',
-            'user': 'root',
-            'password': '',
-            'database': 'asdb',
-            'charset': 'utf8mb4'
-        }
-        
-        # Pest types from your system
-        self.pest_types = [
-            'rice_bug',
-            'green_leaf_hopper', 
-            'black_bug',
-            'brown_plant_hopper'
-        ]
-        
-        # Weather factors that affect pest activity
-        self.weather_factors = [
-            'temperature',
-            'humidity',
-            'wind_speed',
-            'rainfall_1h',
-            'pressure',
-            'cloudiness'
-        ]
-        
-        # Models for each pest type
-        self.models = {}
-        self.scalers = {}
-        
-        # Pest activity thresholds (based on agricultural research)
-        self.pest_thresholds = {
-            'rice_bug': {
-                'low': {'temp_min': 20, 'temp_max': 30, 'humidity_min': 60},
-                'medium': {'temp_min': 25, 'temp_max': 35, 'humidity_min': 70},
-                'high': {'temp_min': 28, 'temp_max': 38, 'humidity_min': 80}
-            },
-            'green_leaf_hopper': {
-                'low': {'temp_min': 18, 'temp_max': 28, 'humidity_min': 65},
-                'medium': {'temp_min': 22, 'temp_max': 32, 'humidity_min': 75},
-                'high': {'temp_min': 25, 'temp_max': 35, 'humidity_min': 85}
-            },
-            'black_bug': {
-                'low': {'temp_min': 22, 'temp_max': 30, 'humidity_min': 70},
-                'medium': {'temp_min': 25, 'temp_max': 33, 'humidity_min': 80},
-                'high': {'temp_min': 28, 'temp_max': 36, 'humidity_min': 90}
-            },
-            'brown_plant_hopper': {
-                'low': {'temp_min': 20, 'temp_max': 28, 'humidity_min': 65},
-                'medium': {'temp_min': 24, 'temp_max': 32, 'humidity_min': 75},
-                'high': {'temp_min': 27, 'temp_max': 35, 'humidity_min': 85}
+    def __init__(self, db_config: Dict = None):
+        """
+        Initialize forecasting engine (deployment version)
+        - Uses env vars when available for Heroku-style deployment.
+        """
+        if db_config:
+            self.db_config = db_config
+        else:
+            self.db_config = {
+                'host': os.getenv('DB_HOST', 'localhost'),
+                'user': os.getenv('DB_USER', 'root'),
+                'password': os.getenv('DB_PASSWORD', ''),
+                'database': os.getenv('DB_NAME', 'asdb'),
+                'charset': os.getenv('DB_CHARSET', 'utf8mb4')
             }
+
+        # Standard pest types (aligned with detection)
+        self.pest_types = [
+            'Rice_Bug',
+            'green_hopper',
+            'black-bug',
+            'brown_hopper',
+            'White_stem_borer'
+        ]
+
+        # Map alternative names to standard names
+        self.pest_type_mapping = {
+            'rice_bug': 'Rice_Bug',
+            'ricebug': 'Rice_Bug',
+            'green_leaf_hopper': 'green_hopper',
+            'green_leaff_hopper': 'green_hopper',
+            'greenleafhopper': 'green_hopper',
+            'black_bug': 'black-bug',
+            'blackbug': 'black-bug',
+            'brown_plant_hopper': 'brown_hopper',
+            'brownplanthopper': 'brown_hopper',
+            'white_stem_borer': 'White_stem_borer',
+            'white_stemborer': 'White_stem_borer'
         }
 
-    def get_historical_pest_data(self, days_back: int = 30) -> pd.DataFrame:
-        """Get historical pest detection data"""
+    # ------------------------------------------------------------------ #
+    # Data helpers
+    # ------------------------------------------------------------------ #
+    def get_historical_pest_data(self, days_back: int = 30, farm_id: int = None, barangay: str = None) -> pd.DataFrame:
+        """
+        Fetch historical pest detection data from images_inbox, joined through devices -> farm_parcels (barangay).
+        """
         try:
-            connection = pymysql.connect(**self.db_config)
-            
-            query = """
-            SELECT 
-                DATE(created_at) as date,
-                classification_json,
-                device_id,
-                parcel_ref
-            FROM images_inbox 
-            WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-            AND classification_json IS NOT NULL 
-            AND classification_json != ''
-            ORDER BY created_at DESC
-            """
-            
-            df = pd.read_sql(query, connection, params=[days_back])
-            connection.close()
-            
-            # Parse pest counts from classification_json
-            pest_data = []
-            for _, row in df.iterrows():
-                try:
-                    classification = json.loads(row['classification_json'])
-                    if 'pest_counts' in classification:
-                        pest_counts = classification['pest_counts']
-                        
-                        # Calculate total pests detected
-                        total_pests = sum(pest_counts.values())
-                        
-                        # Add individual pest counts
-                        pest_record = {
-                            'date': row['date'],
-                            'total_pests': total_pests,
-                            'device_id': row['device_id'],
-                            'parcel_ref': row['parcel_ref']
-                        }
-                        
-                        for pest_type in self.pest_types:
-                            pest_record[f'{pest_type}_count'] = pest_counts.get(pest_type, 0)
-                        
-                        pest_data.append(pest_record)
-                except json.JSONDecodeError:
-                    continue
-            
-            if pest_data:
-                return pd.DataFrame(pest_data)
+            conn = pymysql.connect(**self.db_config)
+            if farm_id and farm_id > 0:
+                query = """
+                SELECT 
+                    DATE(ii.created_at) as date,
+                    ii.classification_json,
+                    ii.device_id,
+                    d.farm_parcels_id
+                FROM images_inbox ii
+                INNER JOIN devices d ON d.device_id = ii.device_id
+                WHERE ii.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                  AND ii.classification_json IS NOT NULL 
+                  AND ii.classification_json != ''
+                  AND d.farm_parcels_id = %s
+                ORDER BY ii.created_at ASC
+                """
+                params = [days_back, farm_id]
+            elif barangay:
+                # Barangay from farm_parcels.Barangay (fallback profile.Barangay)
+                query = """
+                SELECT 
+                    DATE(ii.created_at) as date,
+                    ii.classification_json,
+                    ii.device_id,
+                    COALESCE(fp.Barangay, pr.Barangay) as Barangay,
+                    fp.farm_parcels_id
+                FROM images_inbox ii
+                INNER JOIN devices d ON d.device_id = ii.device_id
+                LEFT JOIN farm_parcels fp ON fp.farm_parcels_id = d.farm_parcels_id
+                LEFT JOIN profile pr ON pr.profile_id = fp.profile_id
+                WHERE ii.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                  AND ii.classification_json IS NOT NULL 
+                  AND ii.classification_json != ''
+                  AND (fp.Barangay = %s OR (fp.Barangay IS NULL AND pr.Barangay = %s))
+                ORDER BY ii.created_at ASC
+                """
+                params = [days_back, barangay, barangay]
             else:
-                # Return empty DataFrame with correct columns
-                columns = ['date', 'total_pests', 'device_id', 'parcel_ref'] + [f'{pest}_count' for pest in self.pest_types]
-                return pd.DataFrame(columns=columns)
-                
+                query = """
+                SELECT 
+                    DATE(created_at) as date,
+                    classification_json,
+                    device_id
+                FROM images_inbox 
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                  AND classification_json IS NOT NULL 
+                  AND classification_json != ''
+                ORDER BY created_at ASC
+                """
+                params = [days_back]
+
+            df = pd.read_sql(query, conn, params=params)
+            conn.close()
+            return df
         except Exception as e:
             logger.error(f"Error getting historical pest data: {e}")
             return pd.DataFrame()
 
-    def get_historical_weather_data(self, days_back: int = 30) -> pd.DataFrame:
-        """Get historical weather data"""
-        try:
-            connection = pymysql.connect(**self.db_config)
-            
-            query = """
-            SELECT 
-                DATE(timestamp) as date,
-                AVG(temperature) as avg_temperature,
-                AVG(humidity) as avg_humidity,
-                AVG(wind_speed) as avg_wind_speed,
-                SUM(rainfall_1h) as total_rainfall,
-                AVG(pressure) as avg_pressure,
-                AVG(cloudiness) as avg_cloudiness,
-                MAX(temperature) as max_temperature,
-                MIN(temperature) as min_temperature
-            FROM weather_current 
-            WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)
-            GROUP BY DATE(timestamp)
-            ORDER BY date DESC
-            """
-            
-            df = pd.read_sql(query, connection, params=[days_back])
-            connection.close()
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error getting historical weather data: {e}")
+    def parse_pest_counts(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Parse pest_counts from classification_json and normalize pest names.
+        """
+        if df.empty:
             return pd.DataFrame()
 
-    def get_weather_forecast(self, days_ahead: int = 7) -> pd.DataFrame:
-        """Get weather forecast data"""
-        try:
-            connection = pymysql.connect(**self.db_config)
-            
-            query = """
-            SELECT 
-                DATE(timestamp) as date,
-                AVG(temperature) as avg_temperature,
-                AVG(humidity) as avg_humidity,
-                AVG(wind_speed) as avg_wind_speed,
-                SUM(rainfall_3h) as total_rainfall,
-                AVG(pressure) as avg_pressure,
-                AVG(cloudiness) as avg_cloudiness
-            FROM weather_forecast 
-            WHERE timestamp >= NOW() 
-            AND timestamp <= DATE_ADD(NOW(), INTERVAL %s DAY)
-            GROUP BY DATE(timestamp)
-            ORDER BY date ASC
-            """
-            
-            df = pd.read_sql(query, connection, params=[days_ahead])
-            connection.close()
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error getting weather forecast: {e}")
-            return pd.DataFrame()
-
-    def prepare_training_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Prepare training data by combining pest and weather data"""
-        logger.info("Preparing training data...")
-        
-        # Get historical data
-        pest_data = self.get_historical_pest_data(30)
-        weather_data = self.get_historical_weather_data(30)
-        
-        if pest_data.empty or weather_data.empty:
-            logger.warning("Insufficient historical data for training")
-            return pd.DataFrame(), pd.DataFrame()
-        
-        # Merge pest and weather data by date
-        combined_data = pd.merge(pest_data, weather_data, on='date', how='inner')
-        
-        # Create features for machine learning
-        features = []
-        targets = []
-        
-        for _, row in combined_data.iterrows():
-            # Weather features
-            feature_vector = [
-                row['avg_temperature'],
-                row['avg_humidity'], 
-                row['avg_wind_speed'],
-                row['total_rainfall'],
-                row['avg_pressure'],
-                row['avg_cloudiness'],
-                row['max_temperature'],
-                row['min_temperature']
-            ]
-            
-            features.append(feature_vector)
-            
-            # Pest targets (total pests detected)
-            targets.append(row['total_pests'])
-        
-        X = pd.DataFrame(features, columns=[
-            'temperature', 'humidity', 'wind_speed', 'rainfall',
-            'pressure', 'cloudiness', 'max_temp', 'min_temp'
-        ])
-        
-        y = pd.Series(targets, name='total_pests')
-        
-        logger.info(f"Prepared {len(X)} training samples")
-        return X, y
-
-    def train_models(self):
-        """Train forecasting models"""
-        logger.info("Training pest forecasting models...")
-        
-        X, y = self.prepare_training_data()
-        
-        if X.empty:
-            logger.warning("No training data available, using rule-based forecasting")
-            return
-        
-        # Train models for different pest types
-        for pest_type in self.pest_types:
+        parsed_rows = []
+        for _, row in df.iterrows():
             try:
-                # Get pest-specific targets
-                pest_targets = []
-                for _, row in X.iterrows():
-                    # This is a simplified approach - in practice you'd have pest-specific targets
-                    pest_targets.append(y.iloc[len(pest_targets)])
-                
-                if len(pest_targets) < 5:  # Need minimum data for training
-                    continue
-                
-                # Scale features
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X)
-                
-                # Train Random Forest model
-                model = RandomForestRegressor(
-                    n_estimators=50,
-                    max_depth=5,
-                    random_state=42,
-                    min_samples_split=2
-                )
-                
-                model.fit(X_scaled, pest_targets)
-                
-                self.models[pest_type] = model
-                self.scalers[pest_type] = scaler
-                
-                logger.info(f"Trained model for {pest_type}")
-                
-            except Exception as e:
-                logger.error(f"Error training model for {pest_type}: {e}")
+                cls = json.loads(row['classification_json'])
+            except Exception:
+                continue
 
-    def predict_pest_risk(self, weather_data: Dict) -> Dict:
-        """Predict pest risk based on weather conditions"""
-        risk_predictions = {}
-        
-        for pest_type in self.pest_types:
-            try:
-                # Rule-based risk assessment
-                temp = weather_data.get('temperature', 25)
-                humidity = weather_data.get('humidity', 70)
-                
-                risk_level = 'low'
-                risk_score = 0.3
-                
-                # Check against pest-specific thresholds
-                thresholds = self.pest_thresholds.get(pest_type, {})
-                
-                if 'high' in thresholds:
-                    high_thresh = thresholds['high']
-                    if (temp >= high_thresh['temp_min'] and 
-                        temp <= high_thresh['temp_max'] and 
-                        humidity >= high_thresh['humidity_min']):
-                        risk_level = 'high'
-                        risk_score = 0.9
-                    elif 'medium' in thresholds:
-                        med_thresh = thresholds['medium']
-                        if (temp >= med_thresh['temp_min'] and 
-                            temp <= med_thresh['temp_max'] and 
-                            humidity >= med_thresh['humidity_min']):
-                            risk_level = 'medium'
-                            risk_score = 0.6
-                
-                # Additional factors
-                if weather_data.get('rainfall', 0) > 5:
-                    risk_score += 0.1  # Rain increases pest activity
-                
-                if weather_data.get('wind_speed', 0) > 10:
-                    risk_score -= 0.1  # High wind reduces pest activity
-                
-                risk_score = max(0.1, min(1.0, risk_score))
-                
-                risk_predictions[pest_type] = {
-                    'risk_level': risk_level,
-                    'risk_score': round(risk_score, 2),
-                    'confidence': 0.8
-                }
-                
-            except Exception as e:
-                logger.error(f"Error predicting risk for {pest_type}: {e}")
-                risk_predictions[pest_type] = {
-                    'risk_level': 'unknown',
-                    'risk_score': 0.5,
-                    'confidence': 0.3
-                }
-        
-        return risk_predictions
+            pest_counts = {}
+            if isinstance(cls, dict):
+                if 'pest_counts' in cls:
+                    pest_counts = cls.get('pest_counts', {})
+                elif 'predictions' in cls and isinstance(cls['predictions'], dict):
+                    pest_counts = cls['predictions'].get('pest_counts', {})
 
-    def generate_forecast(self, days_ahead: int = 7) -> Dict:
-        """Generate pest forecast for next N days"""
-        logger.info(f"Generating {days_ahead}-day pest forecast...")
-        
-        # Get weather forecast
-        weather_forecast = self.get_weather_forecast(days_ahead)
-        
-        if weather_forecast.empty:
-            logger.warning("No weather forecast available")
-            return {'error': 'No weather forecast data available'}
-        
-        forecast_results = {
-            'generated_at': datetime.now().isoformat(),
-            'forecast_days': days_ahead,
-            'daily_forecasts': []
-        }
-        
-        for _, weather_day in weather_forecast.iterrows():
-            weather_data = {
-                'temperature': weather_day['avg_temperature'],
-                'humidity': weather_day['avg_humidity'],
-                'wind_speed': weather_day['avg_wind_speed'],
-                'rainfall': weather_day['total_rainfall'],
-                'pressure': weather_day['avg_pressure'],
-                'cloudiness': weather_day['avg_cloudiness']
+            if not pest_counts:
+                continue
+
+            normalized = {}
+            for p, c in pest_counts.items():
+                mapped = self.pest_type_mapping.get(p, p)
+                if mapped in self.pest_types:
+                    normalized[mapped] = normalized.get(mapped, 0) + c
+
+            if not normalized:
+                continue
+
+            total = sum(normalized.values())
+            pest_record = {
+                'date': row.get('date'),
+                'device_id': row.get('device_id'),
+                'farm_parcels_id': row.get('farm_parcels_id'),
+                'Barangay': row.get('Barangay'),
+                'total_pests': total
             }
-            
-            # Predict pest risk for this day
-            pest_risks = self.predict_pest_risk(weather_data)
-            
-            # Calculate overall risk
-            overall_risk_scores = [risk['risk_score'] for risk in pest_risks.values()]
-            overall_risk = np.mean(overall_risk_scores) if overall_risk_scores else 0.5
-            
-            if overall_risk >= 0.7:
-                overall_level = 'high'
-            elif overall_risk >= 0.4:
-                overall_level = 'medium'
+            for p in self.pest_types:
+                pest_record[p] = normalized.get(p, 0)
+
+            parsed_rows.append(pest_record)
+
+        return pd.DataFrame(parsed_rows)
+
+    def predict_pest_risk_from_history(self, days_back: int = 30, farm_id: int = None, barangay: str = None) -> Dict:
+        """
+        Compute percentage-based pest risk using historical detection data only.
+        """
+        raw_df = self.get_historical_pest_data(days_back=days_back, farm_id=farm_id, barangay=barangay)
+        parsed = self.parse_pest_counts(raw_df)
+        if parsed.empty:
+            return {}
+
+        totals_by_pest = {p: 0 for p in self.pest_types}
+        for _, row in parsed.iterrows():
+            for p in self.pest_types:
+                totals_by_pest[p] += row.get(p, 0)
+
+        overall_total = sum(totals_by_pest.values())
+        if overall_total <= 0:
+            return {}
+
+        risks = {}
+        for pest, count in totals_by_pest.items():
+            pct = (count / overall_total) * 100.0
+            if pct >= 40:
+                level = 'high'
+            elif pct >= 20:
+                level = 'medium'
             else:
-                overall_level = 'low'
-            
-            day_forecast = {
-                'date': weather_day['date'].strftime('%Y-%m-%d'),
-                'weather': weather_data,
-                'overall_risk': {
-                    'level': overall_level,
-                    'score': round(overall_risk, 2)
-                },
-                'pest_risks': pest_risks,
-                'recommendations': self.generate_recommendations(pest_risks, weather_data)
+                level = 'low'
+            risks[pest] = {
+                'percentage': round(pct, 2),
+                'risk_level': level,
+                'risk_score_decimal': round(pct / 100.0, 3),
+                'confidence': 0.80
             }
-            
-            forecast_results['daily_forecasts'].append(day_forecast)
-        
-        return forecast_results
+        return risks
 
-    def generate_recommendations(self, pest_risks: Dict, weather_data: Dict) -> List[str]:
-        """Generate recommendations based on pest risks and weather"""
-        recommendations = []
-        
-        high_risk_pests = [pest for pest, risk in pest_risks.items() 
-                          if risk['risk_level'] == 'high']
-        
-        if high_risk_pests:
-            recommendations.append(f"High risk detected for: {', '.join(high_risk_pests)}")
-            recommendations.append("Consider preventive treatment with recommended pesticides")
-            recommendations.append("Monitor fields closely for pest activity")
-        
-        if weather_data.get('humidity', 0) > 80:
-            recommendations.append("High humidity detected - favorable for pest reproduction")
-            recommendations.append("Ensure proper field drainage")
-        
-        if weather_data.get('temperature', 0) > 32:
-            recommendations.append("High temperature detected - monitor for heat stress")
-            recommendations.append("Consider irrigation to reduce plant stress")
-        
-        if weather_data.get('rainfall', 0) > 10:
-            recommendations.append("Heavy rainfall expected - check for standing water")
-            recommendations.append("Pests may seek refuge in plants")
-        
-        if not recommendations:
-            recommendations.append("Weather conditions are favorable for pest control")
-            recommendations.append("Continue regular monitoring")
-        
-        return recommendations
+    def generate_forecast(self, days_ahead: int = 7, farm_id: int = None, barangay: str = None) -> Dict:
+        """
+        Generate a simple forecast by projecting recent pest percentages across the horizon.
+        """
+        pest_risks = self.predict_pest_risk_from_history(days_back=30, farm_id=farm_id, barangay=barangay)
+        if not pest_risks:
+            return {'error': 'No pest detection data available'}
+
+        today = datetime.utcnow().date()
+        daily_forecasts = []
+        for i in range(days_ahead):
+            date_str = (today + timedelta(days=i)).strftime('%Y-%m-%d')
+            daily_forecasts.append({
+                'date': date_str,
+                'pest_risks': pest_risks,
+                'recommendations': self.generate_recommendations(pest_risks)
+            })
+
+        return {
+            'generated_at': datetime.utcnow().isoformat(),
+            'forecast_days': days_ahead,
+            'daily_forecasts': daily_forecasts,
+            'barangay': barangay,
+            'farm_id': farm_id
+        }
+
+    def generate_recommendations(self, pest_risks: Dict) -> List[str]:
+        """
+        Simple recommendations based on highest risk pests.
+        """
+        recs = []
+        high = [p for p, r in pest_risks.items() if r['risk_level'] == 'high']
+        medium = [p for p, r in pest_risks.items() if r['risk_level'] == 'medium']
+
+        if high:
+            recs.append(f"High outbreak risk detected: {', '.join(high)}. Prepare immediate control measures.")
+        if medium:
+            recs.append(f"Monitor and apply preventive measures for: {', '.join(medium)}.")
+        if not recs:
+            recs.append("Low outbreak risk. Continue regular monitoring and good field hygiene.")
+        return recs
 
     def save_forecast_to_database(self, forecast_data: Dict):
-        """Save forecast results to database"""
+        """
+        Save forecast results to pest_forecasts table.
+        Stores percentage as decimal in risk_score.
+        """
         try:
-            connection = pymysql.connect(**self.db_config)
-            cursor = connection.cursor()
-            
-            # Create forecast table if it doesn't exist
-            create_table_query = """
+            conn = pymysql.connect(**self.db_config)
+            cursor = conn.cursor()
+
+            create_table = """
             CREATE TABLE IF NOT EXISTS pest_forecasts (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 forecast_date DATE NOT NULL,
                 pest_type VARCHAR(50) NOT NULL,
                 risk_level ENUM('low', 'medium', 'high') NOT NULL,
                 risk_score DECIMAL(3,2) NOT NULL,
-                confidence DECIMAL(3,2) NOT NULL,
+                confidence DECIMAL(3,2) NOT NULL DEFAULT 0.80,
                 weather_temperature DECIMAL(5,2),
                 weather_humidity DECIMAL(5,2),
                 weather_rainfall DECIMAL(5,2),
                 recommendations TEXT,
+                farm_parcels_id INT NULL,
+                barangay VARCHAR(100) NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_forecast_date (forecast_date),
-                INDEX idx_pest_type (pest_type)
+                INDEX idx_pest_type (pest_type),
+                INDEX idx_farm (farm_parcels_id),
+                INDEX idx_barangay (barangay)
             )
             """
-            
-            cursor.execute(create_table_query)
-            
-            # Insert forecast data
-            for day_forecast in forecast_data.get('daily_forecasts', []):
-                forecast_date = day_forecast['date']
-                weather = day_forecast['weather']
-                
-                for pest_type, risk_info in day_forecast['pest_risks'].items():
-                    insert_query = """
-                    INSERT INTO pest_forecasts 
+            cursor.execute(create_table)
+
+            farm_id = forecast_data.get('farm_id')
+            barangay = forecast_data.get('barangay')
+
+            for day in forecast_data.get('daily_forecasts', []):
+                date_str = day['date']
+                recs_json = json.dumps(day.get('recommendations', []))
+                for pest, info in day.get('pest_risks', {}).items():
+                    insert = """
+                    INSERT INTO pest_forecasts
                     (forecast_date, pest_type, risk_level, risk_score, confidence,
-                     weather_temperature, weather_humidity, weather_rainfall, recommendations)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     weather_temperature, weather_humidity, weather_rainfall, recommendations,
+                     farm_parcels_id, barangay)
+                    VALUES (%s,%s,%s,%s,%s,NULL,NULL,NULL,%s,%s,%s)
                     """
-                    
-                    cursor.execute(insert_query, (
-                        forecast_date,
-                        pest_type,
-                        risk_info['risk_level'],
-                        risk_info['risk_score'],
-                        risk_info['confidence'],
-                        weather['temperature'],
-                        weather['humidity'],
-                        weather['rainfall'],
-                        json.dumps(day_forecast['recommendations'])
+                    cursor.execute(insert, (
+                        date_str,
+                        pest,
+                        info['risk_level'],
+                        info['risk_score_decimal'],
+                        info.get('confidence', 0.80),
+                        recs_json,
+                        farm_id,
+                        barangay
                     ))
-            
-            connection.commit()
-            connection.close()
-            
+
+            conn.commit()
+            conn.close()
             logger.info("Forecast data saved to database")
-            
         except Exception as e:
             logger.error(f"Error saving forecast to database: {e}")
 
+    def get_all_barangays(self) -> List[str]:
+        """
+        Return barangays that have pest detection data.
+        """
+        try:
+            conn = pymysql.connect(**self.db_config)
+            query = """
+            SELECT DISTINCT COALESCE(fp.Barangay, pr.Barangay) as Barangay
+            FROM devices d
+            LEFT JOIN farm_parcels fp ON fp.farm_parcels_id = d.farm_parcels_id
+            LEFT JOIN profile pr ON pr.profile_id = fp.profile_id
+            INNER JOIN images_inbox ii ON ii.device_id = d.device_id
+            WHERE ii.classification_json IS NOT NULL 
+              AND ii.classification_json != ''
+              AND (fp.Barangay IS NOT NULL AND fp.Barangay != '' OR pr.Barangay IS NOT NULL AND pr.Barangay != '')
+            GROUP BY COALESCE(fp.Barangay, pr.Barangay)
+            HAVING COUNT(DISTINCT ii.ID) > 0
+            ORDER BY COALESCE(fp.Barangay, pr.Barangay) ASC
+            """
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df['Barangay'].tolist() if not df.empty else []
+        except Exception as e:
+            logger.error(f"Error getting barangays: {e}")
+            return []
+
+
 def main():
-    """Main function to generate pest forecast"""
-    print("🌾 AgriShield Pest Forecasting Engine")
-    print("=" * 50)
-    
-    # Initialize forecasting engine
+    """
+    Simple CLI to generate forecasts for all barangays or a single barangay.
+    """
+    print("🌾 AgriShield Pest Forecasting Engine (Deployment)")
     engine = PestForecastingEngine()
-    
-    # Train models (if sufficient data available)
-    engine.train_models()
-    
-    # Generate 7-day forecast
-    print("🔮 Generating 7-day pest forecast...")
-    forecast = engine.generate_forecast(7)
-    
-    if 'error' in forecast:
-        print(f"❌ Error: {forecast['error']}")
+
+    barangays = engine.get_all_barangays()
+    if not barangays:
+        print("No barangays with detection data found.")
         return
-    
-    # Display results
-    print(f"\n📊 Pest Forecast Generated: {forecast['generated_at']}")
-    print(f"📅 Forecast Period: {forecast['forecast_days']} days")
-    
-    for day in forecast['daily_forecasts']:
-        print(f"\n📅 {day['date']}:")
-        print(f"   🌡️ Temperature: {day['weather']['temperature']:.1f}°C")
-        print(f"   💧 Humidity: {day['weather']['humidity']:.1f}%")
-        print(f"   🌧️ Rainfall: {day['weather']['rainfall']:.1f}mm")
-        print(f"   ⚠️ Overall Risk: {day['overall_risk']['level'].upper()} ({day['overall_risk']['score']})")
-        
-        print(f"   🐛 Pest Risks:")
-        for pest, risk in day['pest_risks'].items():
-            print(f"      - {pest}: {risk['risk_level']} ({risk['risk_score']})")
-        
-        print(f"   💡 Recommendations:")
-        for rec in day['recommendations'][:3]:  # Show first 3 recommendations
-            print(f"      • {rec}")
-    
-    # Save to database
-    engine.save_forecast_to_database(forecast)
-    
-    print(f"\n✅ Forecast complete! Data saved to database.")
-    print(f"📊 Use the API endpoints to access forecast data.")
+
+    print(f"Generating forecasts for {len(barangays)} barangays...")
+    for brgy in barangays:
+        try:
+            forecast = engine.generate_forecast(days_ahead=7, barangay=brgy)
+            if 'error' in forecast:
+                print(f"- {brgy}: {forecast['error']}")
+                continue
+            engine.save_forecast_to_database(forecast)
+            print(f"- {brgy}: saved {len(forecast['daily_forecasts'])} days")
+        except Exception as e:
+            print(f"- {brgy}: error {e}")
+
 
 if __name__ == "__main__":
     main()
