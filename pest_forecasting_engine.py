@@ -689,12 +689,12 @@ class PestForecastingEngine:
                 weather_rainfall DECIMAL(5,2),
                 recommendations TEXT,
                 farm_parcels_id INT NULL,
-                Barangay VARCHAR(100) NULL,
+                barangay VARCHAR(100) NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_forecast_date (forecast_date),
                 INDEX idx_pest_type (pest_type),
                 INDEX idx_farm (farm_parcels_id),
-                INDEX idx_barangay (Barangay)
+                INDEX idx_barangay (barangay)
             )
             """
             
@@ -714,7 +714,7 @@ class PestForecastingEngine:
                     INSERT INTO pest_forecasts 
                     (forecast_date, pest_type, risk_level, risk_score, confidence,
                      weather_temperature, weather_humidity, weather_rainfall, recommendations,
-                     farm_parcels_id, Barangay)
+                     farm_parcels_id, barangay)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     

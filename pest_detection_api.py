@@ -1674,7 +1674,7 @@ def get_barangay_forecast(barangay):
             weather_rainfall,
             recommendations
         FROM pest_forecasts 
-        WHERE Barangay = %s
+        WHERE barangay = %s
         AND forecast_date >= CURDATE()
         ORDER BY forecast_date ASC, pest_type ASC
         """
