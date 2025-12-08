@@ -25,7 +25,7 @@
 - **Purpose:** Service-oriented training for Heroku deployment
 
 **Features:**
-- ❌ NO `upload_model_to_server()` function
+- ❌ NO `upload_model_to_server()` functio
 - ❌ NO `convert_to_onnx()` function
 - ✅ Saves to database DURING training (NEW!)
 - ✅ Farm-specific training support
