@@ -62,9 +62,8 @@ MODEL_ACCURACY = None  # Store model accuracy from server
 # ============================================================================
 # Set the default model to use when no server model is available
 # Options: "best 2.onnx", "best.onnx", "best5.onnx", etc.
-# To revert: Change DEFAULT_MODEL_NAME back to "best.onnx"
-DEFAULT_MODEL_NAME = "best 2.onnx"  # Currently using "best 2.onnx" as default
-# REVERT: Change above line to: DEFAULT_MODEL_NAME = "best.onnx"
+# Default: best 2.onnx
+DEFAULT_MODEL_NAME = "best 2.onnx"
 
 # ============================================================================
 # MODEL CACHING SYSTEM (Farm-Specific Models)
@@ -493,15 +492,15 @@ else:
 # PEST FORECASTING SERVICE
 # ============================================================================
 
-# Try to import forecasting engine
+# Try to import forecasting engine (use deployment version)
 try:
-    from pest_forecasting_engine import PestForecastingEngine
+    from deployment.pest_forecasting_engine import PestForecastingEngine
     FORECASTING_AVAILABLE = True
-    print("✅ Pest forecasting engine available")
+    print("✅ Pest forecasting engine (deployment) available")
 except ImportError as e:
     FORECASTING_AVAILABLE = False
     print(f"⚠️  Pest forecasting engine not available: {e}")
-    print("   Install dependencies: pandas, scikit-learn, pymysql")
+    print("   Install dependencies: pandas, numpy, pymysql")
 
 # ============================================================================
 # TRAINING SERVICE - Using PHP API Gateway (No Direct Database Access)
