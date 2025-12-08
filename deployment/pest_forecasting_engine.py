@@ -86,13 +86,13 @@ class PestForecastingEngine:
                 """
                 params = [days_back, farm_id]
             elif barangay:
-                # Barangay from farm_parcels.Barangay (fallback profile.Barangay)
+                # Barangay is stored as farm_location in farm_parcels; fallback to profile.Barangay
                 query = """
                 SELECT 
                     DATE(ii.created_at) as date,
                     ii.classification_json,
                     ii.device_id,
-                    COALESCE(fp.Barangay, pr.Barangay) as Barangay,
+                    COALESCE(fp.farm_location, pr.Barangay) as Barangay,
                     fp.farm_parcels_id
                 FROM images_inbox ii
                 INNER JOIN devices d ON d.device_id = ii.device_id
@@ -101,7 +101,7 @@ class PestForecastingEngine:
                 WHERE ii.created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
                   AND ii.classification_json IS NOT NULL 
                   AND ii.classification_json != ''
-                  AND (fp.Barangay = %s OR (fp.Barangay IS NULL AND pr.Barangay = %s))
+                  AND (fp.farm_location = %s OR (fp.farm_location IS NULL AND pr.Barangay = %s))
                 ORDER BY ii.created_at ASC
                 """
                 params = [days_back, barangay, barangay]
@@ -260,6 +260,7 @@ class PestForecastingEngine:
             conn = pymysql.connect(**self.db_config)
             cursor = conn.cursor()
 
+            # Create table if it doesn't exist
             create_table = """
             CREATE TABLE IF NOT EXISTS pest_forecasts (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -282,6 +283,23 @@ class PestForecastingEngine:
             )
             """
             cursor.execute(create_table)
+            
+            # Check and add missing columns if table already exists
+            try:
+                cursor.execute("SHOW COLUMNS FROM pest_forecasts LIKE 'farm_parcels_id'")
+                if cursor.fetchone() is None:
+                    cursor.execute("ALTER TABLE pest_forecasts ADD COLUMN farm_parcels_id INT NULL")
+                    cursor.execute("ALTER TABLE pest_forecasts ADD INDEX idx_farm (farm_parcels_id)")
+            except Exception:
+                pass  # Column might already exist or index might exist
+            
+            try:
+                cursor.execute("SHOW COLUMNS FROM pest_forecasts LIKE 'barangay'")
+                if cursor.fetchone() is None:
+                    cursor.execute("ALTER TABLE pest_forecasts ADD COLUMN barangay VARCHAR(100) NULL")
+                    cursor.execute("ALTER TABLE pest_forecasts ADD INDEX idx_barangay (barangay)")
+            except Exception:
+                pass  # Column might already exist or index might exist
 
             farm_id = forecast_data.get('farm_id')
             barangay = forecast_data.get('barangay')
@@ -317,22 +335,51 @@ class PestForecastingEngine:
     def get_all_barangays(self) -> List[str]:
         """
         Return barangays that have pest detection data.
+        In this schema, barangay is stored as farm_parcels.farm_location.
+        If farm_location is missing, fall back to profile.Barangay.
         """
         try:
             conn = pymysql.connect(**self.db_config)
-            query = """
-            SELECT DISTINCT COALESCE(fp.Barangay, pr.Barangay) as Barangay
-            FROM devices d
-            LEFT JOIN farm_parcels fp ON fp.farm_parcels_id = d.farm_parcels_id
-            LEFT JOIN profile pr ON pr.profile_id = fp.profile_id
-            INNER JOIN images_inbox ii ON ii.device_id = d.device_id
-            WHERE ii.classification_json IS NOT NULL 
-              AND ii.classification_json != ''
-              AND (fp.Barangay IS NOT NULL AND fp.Barangay != '' OR pr.Barangay IS NOT NULL AND pr.Barangay != '')
-            GROUP BY COALESCE(fp.Barangay, pr.Barangay)
-            HAVING COUNT(DISTINCT ii.ID) > 0
-            ORDER BY COALESCE(fp.Barangay, pr.Barangay) ASC
-            """
+            cursor = conn.cursor()
+
+            # Check if farm_parcels has farm_location column
+            has_fp_farm_location = False
+            try:
+                cursor.execute("SHOW COLUMNS FROM farm_parcels LIKE 'farm_location'")
+                has_fp_farm_location = cursor.fetchone() is not None
+            except Exception:
+                has_fp_farm_location = False
+
+            if has_fp_farm_location:
+                query = """
+                SELECT DISTINCT COALESCE(fp.farm_location, pr.Barangay) as Barangay
+                FROM devices d
+                LEFT JOIN farm_parcels fp ON fp.farm_parcels_id = d.farm_parcels_id
+                LEFT JOIN profile pr ON pr.profile_id = fp.profile_id
+                INNER JOIN images_inbox ii ON ii.device_id = d.device_id
+                WHERE ii.classification_json IS NOT NULL 
+                  AND ii.classification_json != ''
+                  AND (fp.farm_location IS NOT NULL AND fp.farm_location != '' OR pr.Barangay IS NOT NULL AND pr.Barangay != '')
+                GROUP BY COALESCE(fp.farm_location, pr.Barangay)
+                HAVING COUNT(DISTINCT ii.ID) > 0
+                ORDER BY COALESCE(fp.farm_location, pr.Barangay) ASC
+                """
+            else:
+                # Fallback to profile.Barangay only
+                query = """
+                SELECT DISTINCT pr.Barangay as Barangay
+                FROM devices d
+                LEFT JOIN farm_parcels fp ON fp.farm_parcels_id = d.farm_parcels_id
+                LEFT JOIN profile pr ON pr.profile_id = fp.profile_id
+                INNER JOIN images_inbox ii ON ii.device_id = d.device_id
+                WHERE ii.classification_json IS NOT NULL 
+                  AND ii.classification_json != ''
+                  AND pr.Barangay IS NOT NULL AND pr.Barangay != ''
+                GROUP BY pr.Barangay
+                HAVING COUNT(DISTINCT ii.ID) > 0
+                ORDER BY pr.Barangay ASC
+                """
+
             df = pd.read_sql(query, conn)
             conn.close()
             return df['Barangay'].tolist() if not df.empty else []
