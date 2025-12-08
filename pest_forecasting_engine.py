@@ -484,6 +484,82 @@ class PestForecastingEngine:
         
         return risk_predictions
 
+    def predict_pest_risk_from_history(self, historical_data: pd.DataFrame, forecast_date) -> Dict:
+        """
+        Predict pest percentages based on historical detection patterns (no weather)
+        Returns percentage of each pest type relative to total pests
+        """
+        pest_predictions = {}
+        
+        if historical_data.empty:
+            # No data - return 0% for all pests
+            for pest_type in self.pest_types:
+                pest_predictions[pest_type] = {
+                    'percentage': 0.0,
+                    'risk_level': 'low',
+                    'confidence': 0.2
+                }
+            return pest_predictions
+        
+        # Calculate total pests across all types
+        total_all_pests = historical_data['total_pests'].sum()
+        
+        if total_all_pests == 0:
+            # No pests detected - return 0% for all
+            for pest_type in self.pest_types:
+                pest_predictions[pest_type] = {
+                    'percentage': 0.0,
+                    'risk_level': 'low',
+                    'confidence': 0.3
+                }
+            return pest_predictions
+        
+        # Calculate percentages for each pest type
+        for pest_type in self.pest_types:
+            try:
+                pest_col = f'{pest_type}_count'
+                if pest_col not in historical_data.columns:
+                    pest_predictions[pest_type] = {
+                        'percentage': 0.0,
+                        'risk_level': 'low',
+                        'confidence': 0.2
+                    }
+                    continue
+                
+                # Get total count for this pest type
+                pest_total = historical_data[pest_col].sum()
+                
+                # Calculate percentage: (pest_count / total_all_pests) * 100
+                percentage = (pest_total / total_all_pests) * 100 if total_all_pests > 0 else 0.0
+                
+                # Determine risk level based on percentage
+                if percentage >= 40:
+                    risk_level = 'high'
+                elif percentage >= 20:
+                    risk_level = 'medium'
+                else:
+                    risk_level = 'low'
+                
+                # Calculate confidence based on data availability
+                days_with_data = len(historical_data[historical_data[pest_col] > 0])
+                confidence = min(0.9, 0.5 + (days_with_data / len(historical_data)) * 0.4)
+                
+                pest_predictions[pest_type] = {
+                    'percentage': round(percentage, 2),
+                    'risk_level': risk_level,
+                    'confidence': round(confidence, 2)
+                }
+                
+            except Exception as e:
+                logger.error(f"Error calculating percentage for {pest_type}: {e}")
+                pest_predictions[pest_type] = {
+                    'percentage': 0.0,
+                    'risk_level': 'low',
+                    'confidence': 0.3
+                }
+        
+        return pest_predictions
+
     def generate_forecast(self, days_ahead: int = 7, farm_id: int = None, barangay: str = None) -> Dict:
         """
         Generate pest forecast for next N days
@@ -555,19 +631,24 @@ class PestForecastingEngine:
         for day_offset in range(days_ahead):
             forecast_date = base_date + timedelta(days=day_offset)
             
-            # Predict pest risk based on historical detection patterns (no weather)
+            # Predict pest percentages based on historical detection patterns (no weather)
             pest_risks = self.predict_pest_risk_from_history(historical_data, forecast_date)
             
-            # Calculate overall risk
-            overall_risk_scores = [risk['risk_score'] for risk in pest_risks.values()]
-            overall_risk = np.mean(overall_risk_scores) if overall_risk_scores else 0.5
+            # Calculate overall risk based on percentages (weighted by percentage)
+            total_percentage = sum(risk['percentage'] for risk in pest_risks.values())
+            high_percentage_pests = sum(1 for risk in pest_risks.values() if risk['percentage'] >= 40)
+            medium_percentage_pests = sum(1 for risk in pest_risks.values() if 20 <= risk['percentage'] < 40)
             
-            if overall_risk >= 0.7:
+            # Determine overall risk level
+            if high_percentage_pests > 0 or total_percentage >= 60:
                 overall_level = 'high'
-            elif overall_risk >= 0.4:
+                overall_risk = 0.8
+            elif medium_percentage_pests > 0 or total_percentage >= 30:
                 overall_level = 'medium'
+                overall_risk = 0.5
             else:
                 overall_level = 'low'
+                overall_risk = 0.3
             
             # Generate barangay-level conclusion
             conclusion = None
@@ -600,20 +681,22 @@ class PestForecastingEngine:
         """
         conclusions = []
         
-        # Analyze overall risk level
-        high_risk_pests = [pest for pest, risk in pest_risks.items() 
+        # Analyze overall risk level based on percentages
+        high_risk_pests = [(pest, risk['percentage']) for pest, risk in pest_risks.items() 
                           if risk['risk_level'] == 'high']
-        medium_risk_pests = [pest for pest, risk in pest_risks.items() 
+        medium_risk_pests = [(pest, risk['percentage']) for pest, risk in pest_risks.items() 
                            if risk['risk_level'] == 'medium']
         
         if high_risk_pests:
-            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in high_risk_pests])
-            conclusions.append(f"High pest risk detected for {pest_names} across the barangay.")
+            pest_info = ', '.join([f"{pest.replace('_', ' ').replace('-', ' ').title()} ({risk['percentage']:.1f}%)" 
+                                  for pest, risk in high_risk_pests])
+            conclusions.append(f"High pest activity detected: {pest_info} across the barangay.")
             conclusions.append("All farms in this barangay should prepare preventive measures.")
         
         if medium_risk_pests and not high_risk_pests:
-            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in medium_risk_pests])
-            conclusions.append(f"Moderate pest activity expected for {pest_names}.")
+            pest_info = ', '.join([f"{pest.replace('_', ' ').replace('-', ' ').title()} ({risk['percentage']:.1f}%)" 
+                                  for pest, risk in medium_risk_pests])
+            conclusions.append(f"Moderate pest activity expected: {pest_info}.")
             conclusions.append("Farmers should monitor their fields closely.")
         
         # Historical context
@@ -641,21 +724,23 @@ class PestForecastingEngine:
         """Generate recommendations based on pest risks from detection patterns"""
         recommendations = []
         
-        high_risk_pests = [pest for pest, risk in pest_risks.items() 
+        high_risk_pests = [(pest, risk['percentage']) for pest, risk in pest_risks.items() 
                           if risk['risk_level'] == 'high']
-        medium_risk_pests = [pest for pest, risk in pest_risks.items() 
+        medium_risk_pests = [(pest, risk['percentage']) for pest, risk in pest_risks.items() 
                            if risk['risk_level'] == 'medium']
         
         if high_risk_pests:
-            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in high_risk_pests])
-            recommendations.append(f"High risk detected for: {pest_names}")
+            pest_info = ', '.join([f"{pest.replace('_', ' ').replace('-', ' ').title()} ({risk['percentage']:.1f}%)" 
+                                  for pest, risk in high_risk_pests])
+            recommendations.append(f"High pest percentage detected: {pest_info}")
             recommendations.append("Consider preventive treatment with recommended pesticides")
             recommendations.append("Monitor fields closely for pest activity")
             recommendations.append("Increase field inspections frequency")
         
         if medium_risk_pests:
-            pest_names = ', '.join([pest.replace('_', ' ').replace('-', ' ').title() for pest in medium_risk_pests])
-            recommendations.append(f"Moderate risk for: {pest_names}")
+            pest_info = ', '.join([f"{pest.replace('_', ' ').replace('-', ' ').title()} ({risk['percentage']:.1f}%)" 
+                                  for pest, risk in medium_risk_pests])
+            recommendations.append(f"Moderate pest percentage: {pest_info}")
             recommendations.append("Continue regular monitoring")
             recommendations.append("Prepare preventive measures if trend continues")
         
@@ -720,11 +805,15 @@ class PestForecastingEngine:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     
+                    # Use percentage as risk_score (0-100 scale, stored as 0-1 in DB)
+                    percentage = risk_info.get('percentage', 0.0)
+                    risk_score_db = percentage / 100.0  # Convert percentage to 0-1 scale for DB
+                    
                     cursor.execute(insert_query, (
                         forecast_date,
                         pest_type,
                         risk_info['risk_level'],
-                        risk_info['risk_score'],
+                        risk_score_db,  # Store percentage as decimal (0-1)
                         risk_info['confidence'],
                         weather.get('temperature') if weather else None,
                         weather.get('humidity') if weather else None,
@@ -907,7 +996,8 @@ def main():
             
             print(f"   🐛 Pest Risks:")
             for pest, risk in day['pest_risks'].items():
-                print(f"      - {pest}: {risk['risk_level']} ({risk['risk_score']})")
+                percentage = risk.get('percentage', 0.0)
+                print(f"      - {pest}: {percentage:.1f}% ({risk['risk_level']})")
             
             # Show barangay conclusion if available
             if day.get('conclusion'):
