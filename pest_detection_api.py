@@ -53,6 +53,15 @@ MODEL_VERSION = None  # Store model version from server
 MODEL_ACCURACY = None  # Store model accuracy from server
 
 # ============================================================================
+# MODEL SELECTION CONFIGURATION
+# ============================================================================
+# Set the default model to use when no server model is available
+# Options: "best 2.onnx", "best.onnx", "best5.onnx", etc.
+# To revert: Change DEFAULT_MODEL_NAME back to "best.onnx"
+DEFAULT_MODEL_NAME = "best 2.onnx"  # Currently using "best 2.onnx" as default
+# REVERT: Change above line to: DEFAULT_MODEL_NAME = "best.onnx"
+
+# ============================================================================
 # MODEL CACHING SYSTEM (Farm-Specific Models)
 # ============================================================================
 
@@ -276,16 +285,26 @@ def find_onnx_model() -> str:
     # FALLBACK: Check local files (fast, no network dependency)
     print("🔍 Checking local model files...")
     
-    # IMPORTANT: Check models/best.onnx first (downloaded models have highest priority)
+    # Check default model first (configurable via DEFAULT_MODEL_NAME)
+    default_model_path = models_dir / DEFAULT_MODEL_NAME
+    if default_model_path.exists():
+        file_size = default_model_path.stat().st_size / (1024 * 1024)  # Size in MB
+        print(f"📦 Found default model: {DEFAULT_MODEL_NAME} ({file_size:.2f} MB)")
+        return str(default_model_path)
+    
+    # IMPORTANT: Check models/best.onnx (downloaded models have high priority)
     downloaded_check = models_dir / "best.onnx"
     if downloaded_check.exists():
         file_size = downloaded_check.stat().st_size / (1024 * 1024)  # Size in MB
         print(f"📦 Found downloaded model in fallback: best.onnx ({file_size:.2f} MB)")
         return str(downloaded_check)
     
+    # Build candidates list with default model first, then others
     candidates = [
-        base_dir / "models" / "best 2.onnx",  # Default model from git (lower priority)
+        base_dir / "models" / DEFAULT_MODEL_NAME,  # Default model (already checked above, but keep for other locations)
+        base_dir / "models" / "best.onnx",  # Original default (for fallback)
         base_dir / "models" / "best5.onnx",
+        base_dir / "deployment" / "models" / DEFAULT_MODEL_NAME,
         base_dir / "deployment" / "models" / "best.onnx",
         base_dir / "deployment" / "models" / "best 2.onnx",
         base_dir / "deployment" / "models" / "best5.onnx",
