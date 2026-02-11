@@ -2,6 +2,9 @@
 
 This guide shows how to auto-create Workday time entries from Salesforce Case activity so you do not need manual end-of-day entry.
 
+If you do not have API access for either system, use the file-based guide:
+`SALESFORCE_EXCEL_TO_WORKDAY_FILE_IMPORT.md`.
+
 ## What this automation does
 
 `salesforce_workday_time_sync.py`:
