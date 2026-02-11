@@ -1,0 +1,6 @@
+.env
+.salesforce_workday_sync_state.json
+.salesforce_excel_workday_state.json
+__pycache__/
+*.pyc
+workday_time_import.csv
