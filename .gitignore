@@ -1,0 +1,4 @@
+.env
+.salesforce_workday_sync_state.json
+__pycache__/
+*.pyc
